@@ -10,10 +10,9 @@ export default function MeetingRoom({ meetingId, user }) {
 
   const wsRef = useRef(null);
   const peersRef = useRef({});
-  const candidateQueueRef = useRef({});
-
-  const localVideoRef = useRef(null);
+  const candidateQueue = useRef({});
   const localStreamRef = useRef(null);
+  const localVideoRef = useRef(null);
 
   const [participants, setParticipants] = useState([]);
 
@@ -26,13 +25,11 @@ export default function MeetingRoom({ meetingId, user }) {
         audio: true
       });
 
-      stream.getAudioTracks().forEach(track => {
-        track.enabled = true;
-      });
-
       localStreamRef.current = stream;
 
-      localVideoRef.current.srcObject = stream;
+      if (localVideoRef.current) {
+        localVideoRef.current.srcObject = stream;
+      }
 
       const ws = new WebSocket(
         `wss://snappier-reapply-kieth.ngrok-free.dev/ws/meeting/${meetingId}/`
@@ -78,7 +75,7 @@ export default function MeetingRoom({ meetingId, user }) {
 
           case "offer":
 
-            await handleOffer(data.offer, data.caller_id);
+            await receiveOffer(data.offer, data.caller_id);
 
             break;
 
@@ -87,11 +84,14 @@ export default function MeetingRoom({ meetingId, user }) {
             const peer = peersRef.current[data.caller_id];
             if (!peer) return;
 
-            await peer.setRemoteDescription(
-              new RTCSessionDescription(data.answer)
-            );
+            if (peer.signalingState === "have-local-offer") {
 
-            flushCandidates(data.caller_id);
+              await peer.setRemoteDescription(
+                new RTCSessionDescription(data.answer)
+              );
+
+              flushCandidates(data.caller_id);
+            }
 
             break;
 
@@ -106,9 +106,7 @@ export default function MeetingRoom({ meetingId, user }) {
             removePeer(data.user_id);
 
             break;
-
         }
-
       };
 
     };
@@ -119,7 +117,10 @@ export default function MeetingRoom({ meetingId, user }) {
 
   const createPeer = async (remoteId, initiator = false) => {
 
-    if (peersRef.current[remoteId]) return;
+    if (peersRef.current[remoteId]) {
+      console.log("Peer already exists:", remoteId);
+      return;
+    }
 
     const peer = new RTCPeerConnection(rtcConfig);
 
@@ -181,7 +182,12 @@ export default function MeetingRoom({ meetingId, user }) {
 
   };
 
-  const handleOffer = async (offer, callerId) => {
+  const receiveOffer = async (offer, callerId) => {
+
+    if (peersRef.current[callerId]) {
+      console.log("Peer already exists, ignoring offer");
+      return;
+    }
 
     const peer = new RTCPeerConnection(rtcConfig);
 
@@ -251,11 +257,11 @@ export default function MeetingRoom({ meetingId, user }) {
 
     if (!peer || !peer.remoteDescription) {
 
-      if (!candidateQueueRef.current[data.caller_id]) {
-        candidateQueueRef.current[data.caller_id] = [];
+      if (!candidateQueue.current[data.caller_id]) {
+        candidateQueue.current[data.caller_id] = [];
       }
 
-      candidateQueueRef.current[data.caller_id].push(data.candidate);
+      candidateQueue.current[data.caller_id].push(data.candidate);
 
       return;
 
@@ -270,7 +276,7 @@ export default function MeetingRoom({ meetingId, user }) {
   const flushCandidates = async (peerId) => {
 
     const peer = peersRef.current[peerId];
-    const queue = candidateQueueRef.current[peerId];
+    const queue = candidateQueue.current[peerId];
 
     if (!queue || !peer) return;
 
@@ -278,7 +284,7 @@ export default function MeetingRoom({ meetingId, user }) {
       await peer.addIceCandidate(new RTCIceCandidate(c));
     }
 
-    delete candidateQueueRef.current[peerId];
+    delete candidateQueue.current[peerId];
 
   };
 
@@ -287,9 +293,12 @@ export default function MeetingRoom({ meetingId, user }) {
     if (!peersRef.current[id]) return;
 
     peersRef.current[id].close();
+
     delete peersRef.current[id];
 
-    setParticipants(prev => prev.filter(p => p.id !== id));
+    setParticipants(prev =>
+      prev.filter(p => p.id !== id)
+    );
 
   };
 
@@ -311,7 +320,11 @@ export default function MeetingRoom({ meetingId, user }) {
 
       <h3>Participants</h3>
 
-      <div style={{ display: "flex", gap: 10 }}>
+      <div style={{
+        display: "flex",
+        gap: "10px",
+        flexWrap: "wrap"
+      }}>
 
         {participants.map(p => (
 
@@ -322,7 +335,9 @@ export default function MeetingRoom({ meetingId, user }) {
             controls
             width="300"
             ref={(video) => {
-              if (video) video.srcObject = p.stream;
+              if (video) {
+                video.srcObject = p.stream;
+              }
             }}
           />
 
