@@ -1,14 +1,16 @@
 import React, { useState, useCallback, useEffect } from 'react';
 
+import Login from './components/Login';
 import LandingPage from './components/LandingPage';
 import GreenRoom from './components/GreenRoom';
 import MeetingRoom from './components/MeetingRoom';
 import './App.css';
 
-
 function App() {
-  const [view, setView] = useState('landing'); // 'landing', 'greenroom', 'meeting'
+  const [view, setView] = useState('login'); // 'login', 'landing', 'greenroom', 'meeting'
+  const [user, setUser] = useState(null);
   const [meetingId, setMeetingId] = useState('');
+  const [pendingMeetingId, setPendingMeetingId] = useState(null);
   const [stream, setStream] = useState(null);
   const [micOn, setMicOn] = useState(true);
   const [videoOn, setVideoOn] = useState(true);
@@ -18,10 +20,19 @@ function App() {
     const urlParams = new URLSearchParams(window.location.search);
     const idFromUrl = urlParams.get('room');
     if (idFromUrl) {
-      setMeetingId(idFromUrl);
-      setView('greenroom');
+      setPendingMeetingId(idFromUrl);
     }
   }, []);
+
+  const handleLogin = (userData) => {
+    setUser(userData);
+    if (pendingMeetingId) {
+      setMeetingId(pendingMeetingId);
+      setView('greenroom');
+    } else {
+      setView('landing');
+    }
+  };
 
   const stopTracks = useCallback(() => {
     if (stream) {
@@ -50,6 +61,9 @@ function App() {
 
   return (
     <div className="app-container">
+      {view === 'login' && (
+        <Login onLogin={handleLogin} />
+      )}
       {view === 'landing' && (
         <LandingPage onJoin={goToGreenRoom} />
       )}
