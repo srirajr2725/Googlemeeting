@@ -2,8 +2,8 @@ import React, { useState } from 'react';
 import { Video, Keyboard, Settings, HelpCircle, MessageSquare } from 'lucide-react';
 import { motion } from 'framer-motion';
 
-const LandingPage = ({ onJoin }) => {
-    const [meetingCode, setMeetingCode] = useState('');
+const LandingPage = ({ onJoin, user }) => {
+    const [meetingCode, setMeetingCode] = useState('9616ec3f-7d0f-4a02-bb35-d8d6a5ca0eae');
 
     const currentDateTime = new Date().toLocaleString('en-US', {
         weekday: 'short',
@@ -14,37 +14,13 @@ const LandingPage = ({ onJoin }) => {
     });
 
     const handleNewMeeting = async () => {
-        try {
-            console.log('Attempting to create a new meeting...');
-            const createRes = await fetch('https://snappier-reapply-kieth.ngrok-free.dev/meeting/create-meeting/', {
-                method: 'POST',
-                headers: {
-                    'Accept': 'application/json',
-                    'Content-Type': 'application/json'
-                }
-            });
-
-            let newMeetingId = '9616ec3f-7d0f-4a02-bb35-d8d6a5ca0eae'; // Default fallback
-            if (createRes.ok) {
-                const createData = await createRes.json();
-                newMeetingId = createData.id || createData.meetingId || createData.meeting_id || createData;
-                console.log('Successfully created new meeting:', newMeetingId);
-            } else {
-                const errText = await createRes.text();
-                console.warn(`Backend /meeting/create-meeting/ failed (${createRes.status}):`, errText);
-            }
-
-            // 2. Join it immediately
-            await handleJoinMeeting(newMeetingId);
-
-        } catch (e) {
-            console.error('Failed to create new meeting, using fallback:', e);
-            await handleJoinMeeting('9616ec3f-7d0f-4a02-bb35-d8d6a5ca0eae');
-        }
+        const hardcodedId = '9616ec3f-7d0f-4a02-bb35-d8d6a5ca0eae';
+        console.log('Using hardcoded meeting ID:', hardcodedId);
+        await handleJoinMeeting(hardcodedId);
     };
 
     const handleJoinMeeting = async (idToJoin) => {
-        const userId = 1; // Hardcoded integer per user request format
+        const userId = user?.id || 1; // Dynamic user id instead of hardcoded
         console.log(`Attempting to join meeting ${idToJoin} with user_id ${userId}...`);
 
         try {

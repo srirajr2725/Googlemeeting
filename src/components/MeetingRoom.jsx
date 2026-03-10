@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
+import Peer from 'simple-peer';
 import {
     Mic, MicOff, Video, VideoOff,
     Hand, MonitorUp, Smile, MoreVertical,
@@ -7,7 +8,7 @@ import {
     Lock
 } from 'lucide-react';
 
-const MeetingRoom = ({ meetingId, onLeave, initialStream, initialMic, initialVideo }) => {
+const MeetingRoom = ({ meetingId, onLeave, initialStream, initialMic, initialVideo, user }) => {
     const [micOn, setMicOn] = useState(initialMic);
     const [videoOn, setVideoOn] = useState(initialVideo);
     const [isScreenSharing, setIsScreenSharing] = useState(false);
@@ -20,7 +21,8 @@ const MeetingRoom = ({ meetingId, onLeave, initialStream, initialMic, initialVid
 
     const [stream, setStream] = useState(initialStream);
     const videoRef = useRef(null);
-    const peersRef = useRef([]);
+    const peersRef = useRef([]); // Stores { peerId, peer, stream }
+    const wsRef = useRef(null);
 
     const [participants, setParticipants] = useState([
         { id: 'me', name: 'You', avatar: 'https://api.dicebear.com/7.x/avataaars/svg?seed=Felix', raisedHand: false }
@@ -33,16 +35,158 @@ const MeetingRoom = ({ meetingId, onLeave, initialStream, initialMic, initialVid
 
     useEffect(() => {
         setParticipants([
-            { id: 'me', name: 'You', avatar: 'https://api.dicebear.com/7.x/avataaars/svg?seed=Felix', raisedHand: false }
+            { id: 'me', name: user?.name || 'You', avatar: 'https://api.dicebear.com/7.x/avataaars/svg?seed=Felix', raisedHand: false }
         ]);
 
         // Add a system welcome message
         setMessages(prev => [
             ...prev,
-            { id: Date.now(), user: 'System', text: `You have joined the room!`, time: 'Now' }
+            { id: Date.now(), user: 'System', text: `You have joined room: ${meetingId}`, time: 'Now' }
         ]);
 
-    }, [meetingId]);
+        // Connect to Django Channels WebSocket Endpoint
+        // Adjust the wss:// URL if your Django routing differs (like /ws/chat/ or wss://localhost).
+        const wsUrl = `wss://snappier-reapply-kieth.ngrok-free.dev/ws/meeting/${meetingId}/`;
+
+        try {
+            wsRef.current = new WebSocket(wsUrl);
+
+            wsRef.current.onopen = () => {
+                console.log('Connected to Signaling WebSocket');
+                // You can send a join broadcast if your Django consumer requires it:
+                wsRef.current.send(JSON.stringify({
+                    type: 'join-room',
+                    user_id: user?.id || 1,
+                    name: user?.name || 'User'
+                }));
+            };
+
+            wsRef.current.onmessage = async (event) => {
+                const message = JSON.parse(event.data);
+                console.log('Received via WebSocket:', message.type);
+
+                switch (message.type) {
+                    case 'user-connected':
+                        // Another user joined. We (as the existing user) should initiate an Offer
+                        createPeerAndOffer(message.user_id, stream);
+                        break;
+
+                    case 'offer':
+                        // We received an offer from somebody else. We need to create a peer to Answer it.
+                        handleReceiveOffer(message.offer, message.caller_id, stream);
+                        break;
+
+                    case 'answer':
+                        // We received an answer to an offer we sent.
+                        const activePeer = peersRef.current.find(p => p.peerId === message.caller_id);
+                        if (activePeer && activePeer.peer) {
+                            activePeer.peer.signal(message.answer);
+                        }
+                        break;
+
+                    case 'ice-candidate':
+                        const icPeer = peersRef.current.find(p => p.peerId === message.caller_id);
+                        if (icPeer && icPeer.peer) {
+                            icPeer.peer.signal(message.candidate);
+                        }
+                        break;
+
+                    case 'user-disconnected':
+                        removePeer(message.user_id);
+                        break;
+
+                    default:
+                        break;
+                }
+            };
+
+            wsRef.current.onerror = (error) => {
+                console.warn('WebSocket signaling error:', error);
+            };
+
+        } catch (e) {
+            console.error('Failed to establish WebRTC Socket', e);
+        }
+
+        // Cleanup on unmount
+        return () => {
+            if (wsRef.current) wsRef.current.close();
+            peersRef.current.forEach(p => p.peer.destroy());
+            peersRef.current = [];
+        };
+    }, [meetingId, stream]); // Depend on stream so we can pass it to SimplePeer
+
+    // --- WebRTC Peer Logic ---
+    const createPeerAndOffer = (remoteUserId, myStream) => {
+        const peer = new Peer({
+            initiator: true,
+            trickle: true,
+            stream: myStream
+        });
+
+        // Whenever SimplePeer generates an ICE candidate or Offer, send it to the Django server to route to the other user
+        peer.on('signal', signal => {
+            if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+                if (signal.type === 'offer') {
+                    wsRef.current.send(JSON.stringify({ type: 'offer', offer: signal, target_id: remoteUserId, caller_id: user?.id || 1 }));
+                } else {
+                    wsRef.current.send(JSON.stringify({ type: 'ice-candidate', candidate: signal, target_id: remoteUserId, caller_id: user?.id || 1 }));
+                }
+            }
+        });
+
+        peer.on('stream', remoteStream => {
+            addParticipantVideo(remoteUserId, remoteStream);
+        });
+
+        peersRef.current.push({ peerId: remoteUserId, peer });
+    };
+
+    const handleReceiveOffer = (incomingOffer, callerId, myStream) => {
+        const peer = new Peer({
+            initiator: false,
+            trickle: true,
+            stream: myStream
+        });
+
+        peer.on('signal', signal => {
+            if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+                if (signal.type === 'answer') {
+                    wsRef.current.send(JSON.stringify({ type: 'answer', answer: signal, target_id: callerId, caller_id: user?.id || 1 }));
+                } else {
+                    wsRef.current.send(JSON.stringify({ type: 'ice-candidate', candidate: signal, target_id: callerId, caller_id: user?.id || 1 }));
+                }
+            }
+        });
+
+        peer.on('stream', remoteStream => {
+            addParticipantVideo(callerId, remoteStream);
+        });
+
+        peer.signal(incomingOffer);
+        peersRef.current.push({ peerId: callerId, peer });
+    };
+
+    const addParticipantVideo = (userId, stream) => {
+        setParticipants(prev => {
+            if (prev.find(p => p.id === userId)) return prev;
+            return [...prev, {
+                id: userId,
+                name: `User ${userId}`,
+                avatar: `https://api.dicebear.com/7.x/avataaars/svg?seed=${userId}`,
+                stream: stream,
+                raisedHand: false
+            }];
+        });
+    };
+
+    const removePeer = (userId) => {
+        const peerObj = peersRef.current.find(p => p.peerId === userId);
+        if (peerObj) peerObj.peer.destroy();
+        peersRef.current = peersRef.current.filter(p => p.peerId !== userId);
+        setParticipants(prev => prev.filter(p => p.id !== userId));
+    };
+
 
     useEffect(() => {
         if (videoRef.current && stream) {
@@ -127,9 +271,22 @@ const MeetingRoom = ({ meetingId, onLeave, initialStream, initialMic, initialVid
                                 </div>
                             ) : (
                                 <div className="video-placeholder">
-                                    <div className="remote-user-placeholder">
-                                        <img src={p.avatar} alt={p.name} className="avatar-large" />
-                                    </div>
+                                    {p.stream ? (
+                                        <video
+                                            autoPlay
+                                            playsInline
+                                            style={{ width: '100%', height: '100%', objectFit: 'cover' }}
+                                            ref={video => {
+                                                if (video && video.srcObject !== p.stream) {
+                                                    video.srcObject = p.stream;
+                                                }
+                                            }}
+                                        />
+                                    ) : (
+                                        <div className="remote-user-placeholder">
+                                            <img src={p.avatar} alt={p.name} className="avatar-large" />
+                                        </div>
+                                    )}
                                 </div>
                             )}
                             <div className="participant-info">

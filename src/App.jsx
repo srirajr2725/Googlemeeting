@@ -65,7 +65,7 @@ function App() {
         <Login onLogin={handleLogin} />
       )}
       {view === 'landing' && (
-        <LandingPage onJoin={goToGreenRoom} />
+        <LandingPage onJoin={goToGreenRoom} user={user} />
       )}
       {view === 'greenroom' && (
         <GreenRoom
@@ -74,6 +74,7 @@ function App() {
             stopTracks();
             setView('landing');
           }}
+          user={user}
         />
       )}
       {view === 'meeting' && (
@@ -83,6 +84,7 @@ function App() {
           initialMic={micOn}
           initialVideo={videoOn}
           onLeave={leaveMeeting}
+          user={user}
         />
       )}
     </div>
