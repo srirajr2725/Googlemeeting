@@ -13,7 +13,7 @@ export default function MeetingRoom({ meetingId, user }) {
   const candidateQueueRef = useRef({});
 
   const localVideoRef = useRef(null);
-  const streamRef = useRef(null);
+  const localStreamRef = useRef(null);
 
   const [participants, setParticipants] = useState([]);
 
@@ -26,11 +26,8 @@ export default function MeetingRoom({ meetingId, user }) {
         audio: true
       });
 
-      streamRef.current = stream;
-
-      if (localVideoRef.current) {
-        localVideoRef.current.srcObject = stream;
-      }
+      localStreamRef.current = stream;
+      localVideoRef.current.srcObject = stream;
 
       const ws = new WebSocket(
         `wss://snappier-reapply-kieth.ngrok-free.dev/ws/meeting/${meetingId}/`
@@ -60,7 +57,7 @@ export default function MeetingRoom({ meetingId, user }) {
 
             data.users.forEach(u => {
               if (u.user_id !== user.id) {
-                createPeerConnection(u.user_id, true);
+                createPeer(u.user_id, true);
               }
             });
 
@@ -69,7 +66,7 @@ export default function MeetingRoom({ meetingId, user }) {
           case "user-connected":
 
             if (data.user_id !== user.id) {
-              createPeerConnection(data.user_id, true);
+              createPeer(data.user_id, true);
             }
 
             break;
@@ -83,108 +80,55 @@ export default function MeetingRoom({ meetingId, user }) {
           case "answer":
 
             const peer = peersRef.current[data.caller_id];
-
             if (!peer) return;
 
             await peer.setRemoteDescription(
               new RTCSessionDescription(data.answer)
             );
 
-            processCandidateQueue(data.caller_id);
+            flushCandidates(data.caller_id);
 
             break;
 
           case "ice-candidate":
 
-            handleCandidate(data);
+            addCandidate(data);
 
             break;
 
           case "user-disconnected":
 
-            cleanupPeer(data.user_id);
-
-            setParticipants(prev =>
-              prev.filter(p => p.id !== data.user_id)
-            );
+            removePeer(data.user_id);
 
             break;
-
         }
-
       };
-
     };
 
     start();
 
     return () => {
 
-      Object.keys(peersRef.current).forEach(id => {
-        cleanupPeer(id);
-      });
+      Object.values(peersRef.current).forEach(peer => peer.close());
 
       if (wsRef.current) wsRef.current.close();
 
-      if (streamRef.current) {
-        streamRef.current.getTracks().forEach(t => t.stop());
+      if (localStreamRef.current) {
+        localStreamRef.current.getTracks().forEach(track => track.stop());
       }
-
     };
 
   }, []);
 
-  const handleCandidate = async (data) => {
+  const createPeer = async (remoteId, initiator = false) => {
 
-    const peer = peersRef.current[data.caller_id];
-
-    if (!peer || !peer.remoteDescription) {
-
-      if (!candidateQueueRef.current[data.caller_id]) {
-        candidateQueueRef.current[data.caller_id] = [];
-      }
-
-      candidateQueueRef.current[data.caller_id].push(data.candidate);
-
-      return;
-    }
-
-    await peer.addIceCandidate(
-      new RTCIceCandidate(data.candidate)
-    );
-
-  };
-
-  const processCandidateQueue = async (peerId) => {
-
-    const queue = candidateQueueRef.current[peerId];
-
-    if (!queue) return;
-
-    const peer = peersRef.current[peerId];
-
-    for (const candidate of queue) {
-      await peer.addIceCandidate(
-        new RTCIceCandidate(candidate)
-      );
-    }
-
-    delete candidateQueueRef.current[peerId];
-
-  };
-
-  const createPeerConnection = async (remoteId, initiator = false) => {
-
-    if (peersRef.current[remoteId]) {
-      cleanupPeer(remoteId);
-    }
+    if (peersRef.current[remoteId]) return;
 
     const peer = new RTCPeerConnection(rtcConfig);
-
     peersRef.current[remoteId] = peer;
 
-    streamRef.current.getTracks().forEach(track => {
-      peer.addTrack(track, streamRef.current);
+    localStreamRef.current.getTracks().forEach(track => {
+      peer.addTrack(track, localStreamRef.current);
     });
 
     peer.ontrack = (event) => {
@@ -197,9 +141,7 @@ export default function MeetingRoom({ meetingId, user }) {
 
         if (exists) {
           return prev.map(p =>
-            p.id === remoteId
-              ? { ...p, stream: remoteStream }
-              : p
+            p.id === remoteId ? { ...p, stream: remoteStream } : p
           );
         }
 
@@ -225,7 +167,6 @@ export default function MeetingRoom({ meetingId, user }) {
     if (initiator) {
 
       const offer = await peer.createOffer();
-
       await peer.setLocalDescription(offer);
 
       wsRef.current.send(JSON.stringify({
@@ -236,21 +177,15 @@ export default function MeetingRoom({ meetingId, user }) {
       }));
 
     }
-
   };
 
   const handleOffer = async (offer, callerId) => {
 
-    if (peersRef.current[callerId]) {
-      cleanupPeer(callerId);
-    }
-
     const peer = new RTCPeerConnection(rtcConfig);
-
     peersRef.current[callerId] = peer;
 
-    streamRef.current.getTracks().forEach(track => {
-      peer.addTrack(track, streamRef.current);
+    localStreamRef.current.getTracks().forEach(track => {
+      peer.addTrack(track, localStreamRef.current);
     });
 
     peer.ontrack = (event) => {
@@ -263,9 +198,7 @@ export default function MeetingRoom({ meetingId, user }) {
 
         if (exists) {
           return prev.map(p =>
-            p.id === callerId
-              ? { ...p, stream: remoteStream }
-              : p
+            p.id === callerId ? { ...p, stream: remoteStream } : p
           );
         }
 
@@ -292,7 +225,7 @@ export default function MeetingRoom({ meetingId, user }) {
       new RTCSessionDescription(offer)
     );
 
-    processCandidateQueue(callerId);
+    flushCandidates(callerId);
 
     const answer = await peer.createAnswer();
 
@@ -307,27 +240,56 @@ export default function MeetingRoom({ meetingId, user }) {
 
   };
 
-  const cleanupPeer = (id) => {
+  const addCandidate = async (data) => {
 
-    const peer = peersRef.current[id];
+    const peer = peersRef.current[data.caller_id];
 
-    if (!peer) return;
+    if (!peer || !peer.remoteDescription) {
 
-    peer.getSenders().forEach(sender => {
-      if (sender.track) sender.track.stop();
-    });
+      if (!candidateQueueRef.current[data.caller_id]) {
+        candidateQueueRef.current[data.caller_id] = [];
+      }
 
-    peer.close();
+      candidateQueueRef.current[data.caller_id].push(data.candidate);
+      return;
+    }
 
+    await peer.addIceCandidate(
+      new RTCIceCandidate(data.candidate)
+    );
+
+  };
+
+  const flushCandidates = async (peerId) => {
+
+    const peer = peersRef.current[peerId];
+    const queue = candidateQueueRef.current[peerId];
+
+    if (!queue || !peer) return;
+
+    for (const c of queue) {
+      await peer.addIceCandidate(new RTCIceCandidate(c));
+    }
+
+    delete candidateQueueRef.current[peerId];
+
+  };
+
+  const removePeer = (id) => {
+
+    if (!peersRef.current[id]) return;
+
+    peersRef.current[id].close();
     delete peersRef.current[id];
 
+    setParticipants(prev => prev.filter(p => p.id !== id));
   };
 
   return (
 
     <div>
 
-      <h2>Meeting Room {meetingId}</h2>
+      <h2>Meeting Room</h2>
 
       <h3>Your Camera</h3>
 
@@ -341,11 +303,7 @@ export default function MeetingRoom({ meetingId, user }) {
 
       <h3>Participants</h3>
 
-      <div style={{
-        display: "flex",
-        flexWrap: "wrap",
-        gap: "10px"
-      }}>
+      <div style={{ display: "flex", gap: 10 }}>
 
         {participants.map(p => (
 
@@ -366,5 +324,4 @@ export default function MeetingRoom({ meetingId, user }) {
     </div>
 
   );
-
 }
