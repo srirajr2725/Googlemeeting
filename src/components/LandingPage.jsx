@@ -88,7 +88,7 @@ const LandingPage = ({ user }) => {
             Video calls and meetings for everyone
           </motion.h1>
           <motion.p initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.5, delay: 0.1 }}>
-            Connect, collaborate, and celebrate from anywhere with Google Meet.
+            Connect, collaborate, and celebrate from anywhere with Raanuva Veeran.
           </motion.p>
 
           <div className="action-buttons">
@@ -109,7 +109,7 @@ const LandingPage = ({ user }) => {
 
           <div className="divider" />
           <div className="learn-more">
-            <a href="#">Learn more</a> about Google Meet
+            <a href="#">Learn more</a> about Raanuva Veeran
           </div>
         </div>
 

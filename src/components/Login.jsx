@@ -75,7 +75,7 @@ const Login = ({ onLogin }) => {
                         <path d="M17 14.5C17 13.3954 16.1046 12.5 15 12.5H12V16.5H15C16.1046 16.5 17 15.6046 17 14.5Z" fill="#EA4335" />
                         <path d="M12 4.5V16.5H15C16.1046 16.5 17 15.6046 17 14.5V4.5C17 3.39543 16.1046 2.5 15 2.5H12Z" fill="#FFBA00" />
                     </svg>
-                    <h2>Welcome to Google Meet</h2>
+                    <h2>Welcome to Raanuva Veeran Meet</h2>
                     <p>Log in to join your classes and meetings</p>
                 </div>
 
