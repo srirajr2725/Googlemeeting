@@ -21,7 +21,6 @@ export default function MeetingRoom({ meetingId, user, onLeave }) {
     const [currentTime, setCurrentTime] = useState(new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }));
 
 
-    /* SAFE SEND */
     const safeSend = (data) => {
 
         if (!wsRef.current) return;
@@ -35,10 +34,8 @@ export default function MeetingRoom({ meetingId, user, onLeave }) {
             const interval = setInterval(() => {
 
                 if (wsRef.current.readyState === WebSocket.OPEN) {
-
                     wsRef.current.send(JSON.stringify(data));
                     clearInterval(interval);
-
                 }
 
             }, 50);
@@ -49,12 +46,19 @@ export default function MeetingRoom({ meetingId, user, onLeave }) {
 
 
     useEffect(() => {
+
         const timer = setInterval(() => {
-            setCurrentTime(new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }));
+
+            setCurrentTime(
+                new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+            );
+
         }, 60000);
 
         return () => clearInterval(timer);
+
     }, []);
+
 
 
     const toggleMic = () => {
@@ -153,20 +157,7 @@ export default function MeetingRoom({ meetingId, user, onLeave }) {
 
                     case "answer":
 
-                        const peer = peersRef.current[data.caller_id];
-
-                        if (!peer) return;
-
-                        if (peer.signalingState !== "have-local-offer") {
-                            console.log("Ignoring duplicate answer");
-                            return;
-                        }
-
-                        await peer.setRemoteDescription(
-                            new RTCSessionDescription(data.answer)
-                        );
-
-                        flushCandidates(data.caller_id);
+                        await handleAnswer(data.answer, data.caller_id);
 
                         break;
 
@@ -206,7 +197,9 @@ export default function MeetingRoom({ meetingId, user, onLeave }) {
 
 
         localStreamRef.current.getTracks().forEach(track => {
+
             peer.addTrack(track, localStreamRef.current);
+
         });
 
 
@@ -263,6 +256,7 @@ export default function MeetingRoom({ meetingId, user, onLeave }) {
         }
 
     };
+
 
 
     const handleOffer = async (offer, callerId) => {
@@ -336,6 +330,23 @@ export default function MeetingRoom({ meetingId, user, onLeave }) {
             caller_id: user.id,
             target_id: callerId
         });
+
+    };
+
+
+    const handleAnswer = async (answer, callerId) => {
+
+        const peer = peersRef.current[callerId];
+
+        if (!peer) return;
+
+        if (peer.signalingState !== "have-local-offer") return;
+
+        await peer.setRemoteDescription(
+            new RTCSessionDescription(answer)
+        );
+
+        flushCandidates(callerId);
 
     };
 
