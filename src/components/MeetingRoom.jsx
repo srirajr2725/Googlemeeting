@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from "react";
-import { Mic, MicOff, Video as VideoIcon, VideoOff, Phone, MonitorUp, MoreVertical, Users } from "lucide-react";
+import { Mic, MicOff, Video as VideoIcon, VideoOff, Phone, MonitorUp, MoreVertical, MessageSquare, Users, Info, Captions, Hand } from "lucide-react";
 import './MeetingRoom.css';
 
 const rtcConfig = {
@@ -19,6 +19,14 @@ export default function MeetingRoom({ meetingId, user, onLeave }) {
     // UI state for bottom controls
     const [isMicOn, setIsMicOn] = useState(true);
     const [isVideoOn, setIsVideoOn] = useState(true);
+    const [currentTime, setCurrentTime] = useState(new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }));
+
+    useEffect(() => {
+        const timer = setInterval(() => {
+            setCurrentTime(new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }));
+        }, 60000);
+        return () => clearInterval(timer);
+    }, []);
 
     const toggleMic = () => {
         if (localStreamRef.current) {
@@ -296,43 +304,34 @@ export default function MeetingRoom({ meetingId, user, onLeave }) {
     };
 
     return (
-        <div className="meeting-container">
-            {/* Header */}
-            <div className="meeting-header">
-                <div className="meeting-info">
-                    <span className="meeting-title">Raanuva Veeran Meet</span>
-                    <span className="meeting-id">{meetingId}</span>
-                </div>
-                <div className="participant-count">
-                    <Users size={18} />
-                    <span>{participants.length + 1}</span>
-                </div>
-            </div>
+        <div className="meet-container">
+            <div className="meet-main">
+                <div className="meet-grid">
 
-            {/* Video Grid */}
-            <div className="video-grid-container">
-                <div className="video-grid">
-                    {/* Local Video */}
-                    <div className="video-tile">
+                    {/* Local User */}
+                    <div className="meet-tile">
                         <video
                             ref={localVideoRef}
-                            className="video-element"
-                            style={{ transform: 'scaleX(-1)' }}
+                            className="meet-video flipped"
                             autoPlay
                             muted
                             playsInline
                         />
-                        <div className="participant-label">
-                            {!isMicOn && <MicOff size={16} color="#ff5252" />}
+                        <div className="meet-label">
+                            {!isMicOn && (
+                                <div className="meet-mic-indicator muted">
+                                    <MicOff size={14} color="white" />
+                                </div>
+                            )}
                             You
                         </div>
                     </div>
 
-                    {/* Remote Videos */}
+                    {/* Remote Participants */}
                     {participants.map(p => (
-                        <div className="video-tile" key={p.id}>
+                        <div className="meet-tile" key={p.id}>
                             <video
-                                className="video-element remote"
+                                className="meet-video"
                                 autoPlay
                                 playsInline
                                 ref={(video) => {
@@ -341,49 +340,84 @@ export default function MeetingRoom({ meetingId, user, onLeave }) {
                                     }
                                 }}
                             />
-                            <div className="participant-label">
+                            <div className="meet-label">
+                                <div className="meet-mic-indicator">
+                                    <Mic size={14} color="white" />
+                                </div>
                                 Participant {p.id.toString().substring(0, 4)}...
                             </div>
                         </div>
                     ))}
+
                 </div>
             </div>
 
-            {/* Bottom Controls */}
-            <div className="controls-container">
-                <div className="controls-bar">
+            {/* Bottom Controls Bar */}
+            <div className="meet-bottom-bar">
+
+                {/* Left: Time and Meeting Code */}
+                <div className="meet-bar-left">
+                    {currentTime} | {meetingId.substring(0, 11)}...
+                </div>
+
+                {/* Center: Main Controls */}
+                <div className="meet-bar-center">
                     <button
-                        className={`control-btn ${!isMicOn ? 'active' : ''}`}
+                        className={`meet-btn ${!isMicOn ? 'active-red' : ''}`}
                         onClick={toggleMic}
                         title={isMicOn ? "Turn off microphone" : "Turn on microphone"}
                     >
-                        {isMicOn ? <Mic size={22} /> : <MicOff size={22} />}
+                        {isMicOn ? <Mic size={20} /> : <MicOff size={20} />}
                     </button>
 
                     <button
-                        className={`control-btn ${!isVideoOn ? 'active' : ''}`}
+                        className={`meet-btn ${!isVideoOn ? 'active-red' : ''}`}
                         onClick={toggleVideo}
                         title={isVideoOn ? "Turn off camera" : "Turn on camera"}
                     >
-                        {isVideoOn ? <VideoIcon size={22} /> : <VideoOff size={22} />}
+                        {isVideoOn ? <VideoIcon size={20} /> : <VideoOff size={20} />}
                     </button>
 
-                    <button className="control-btn" title="Present now">
-                        <MonitorUp size={22} />
+                    <button className="meet-btn" title="Turn on captions">
+                        <Captions size={20} />
                     </button>
 
-                    <button className="control-btn" title="More options">
-                        <MoreVertical size={22} />
+                    <button className="meet-btn" title="Raise hand">
+                        <Hand size={20} />
                     </button>
 
-                    <button
-                        className="control-btn end-call"
-                        onClick={() => onLeave && onLeave()}
-                        title="Leave call"
-                    >
+                    <button className="meet-btn" title="Present now">
+                        <MonitorUp size={20} />
+                    </button>
+
+                    <button className="meet-btn" title="More options">
+                        <MoreVertical size={20} />
+                    </button>
+
+                    <button className="meet-btn-end" onClick={() => {
+                        if (onLeave) {
+                            onLeave();
+                        } else {
+                            window.location.reload();
+                        }
+                    }} title="Leave call">
                         <Phone size={24} style={{ transform: 'rotate(135deg)' }} />
                     </button>
                 </div>
+
+                {/* Right: Info and Chat */}
+                <div className="meet-bar-right">
+                    <button className="meet-small-btn" title="Meeting details">
+                        <Info size={20} />
+                    </button>
+                    <button className="meet-small-btn" title="People">
+                        <Users size={20} />
+                    </button>
+                    <button className="meet-small-btn" title="Chat with everyone">
+                        <MessageSquare size={20} />
+                    </button>
+                </div>
+
             </div>
         </div>
     );
