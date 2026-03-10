@@ -1,338 +1,287 @@
-import React, { useEffect, useRef, useState } from "react";
+import React,{useEffect,useRef,useState} from "react";
 
-const rtcConfig = {
-  iceServers: [
-    {
-      urls: "stun:googlemeetclone.metered.live:80"
-    },
-    {
-      urls: "turn:googlemeetclone.metered.live:80",
-      username: "srirajr2725@gmail.com",
-      credential: "sriraj@2725"
-    }
-  ]
+const rtcConfig={
+iceServers:[
+{urls:"stun:stun.l.google.com:19302"},
+{
+urls:"turn:googlemeetclone.metered.live:80",
+username:"srirajr2725@gmail.com",
+credential:"sriraj@2725"
+}
+]
 };
 
-export default function MeetingRoom({ meetingId, user }) {
+export default function MeetingRoom({meetingId,user}){
 
-    const wsRef = useRef(null);
-    const peersRef = useRef({});
-    const localVideoRef = useRef(null);
-    const streamRef = useRef(null);
+const wsRef=useRef(null);
+const peersRef=useRef({});
+const localVideoRef=useRef(null);
+const streamRef=useRef(null);
 
-    const [participants, setParticipants] = useState([]);
+const [participants,setParticipants]=useState([]);
 
-    useEffect(() => {
+useEffect(()=>{
 
-        const startMeeting = async () => {
+const start=async()=>{
 
-            const stream = await navigator.mediaDevices.getUserMedia({
-                video: true,
-                audio: true
-            });
+const stream=await navigator.mediaDevices.getUserMedia({
+video:true,
+audio:true
+});
 
-            streamRef.current = stream;
-            localVideoRef.current.srcObject = stream;
+streamRef.current=stream;
 
-            const ws = new WebSocket(
-                `wss://snappier-reapply-kieth.ngrok-free.dev/ws/meeting/${meetingId}/`
-            );
+if(localVideoRef.current){
+localVideoRef.current.srcObject=stream;
+}
 
-            wsRef.current = ws;
+const ws=new WebSocket(
+`wss://snappier-reapply-kieth.ngrok-free.dev/ws/meeting/${meetingId}/`
+);
 
-            // Queue for sequential processing of signaling messages
-            let processingQueue = Promise.resolve();
+wsRef.current=ws;
 
-            ws.onopen = () => {
+ws.onopen=()=>{
+ws.send(JSON.stringify({
+type:"join-room",
+user_id:user.id,
+name:user.name
+}));
+};
 
-                console.log("WebSocket connected");
+ws.onmessage=async(event)=>{
 
-                ws.send(JSON.stringify({
-                    type: "join-room",
-                    user_id: user.id,
-                    name: user.name
-                }));
+const data=JSON.parse(event.data);
 
-            };
+switch(data.type){
 
-            ws.onmessage = (event) => {
+case "existing-users":
 
-                // Add to queue to prevent ICE candidate race conditions
-                processingQueue = processingQueue.then(async () => {
+data.users.forEach(u=>{
+if(u.user_id!==user.id){
+createPeerConnection(u.user_id,true);
+}
+});
 
-                    const data = JSON.parse(event.data);
+break;
 
-                    console.log("WS EVENT:", data);
+case "user-connected":
 
-                    switch (data.type) {
+if(data.user_id!==user.id){
+createPeerConnection(data.user_id,true);
+}
 
-                        case "existing-users":
+break;
 
-                            data.users.forEach(u => {
+case "offer":
 
-                                if (u.user_id !== user.id) {
+await handleOffer(data.offer,data.caller_id);
 
-                                    console.log("Creating offer to", u.user_id);
+break;
 
-                                    createPeerConnection(u.user_id, true);
+case "answer":
 
-                                }
+await peersRef.current[data.caller_id]
+.setRemoteDescription(new RTCSessionDescription(data.answer));
 
-                            });
+break;
 
-                            break;
+case "ice-candidate":
 
+await peersRef.current[data.caller_id]
+.addIceCandidate(new RTCIceCandidate(data.candidate));
 
-                        case "user-connected":
+break;
 
-                            console.log("New user joined:", data.user_id);
+case "user-disconnected":
 
-                            // DO NOT create offer here (prevents collision)
+removePeer(data.user_id);
 
-                            break;
+break;
 
+}
 
-                        case "offer":
+};
 
-                            await handleOffer(data.offer, data.caller_id);
+};
 
-                            break;
+start();
 
+return()=>{
 
-                        case "answer":
+Object.values(peersRef.current).forEach(peer=>peer.close());
 
-                            if (peersRef.current[data.caller_id]) {
+if(wsRef.current) wsRef.current.close();
 
-                                await peersRef.current[data.caller_id]
-                                    .setRemoteDescription(
-                                        new RTCSessionDescription(data.answer)
-                                    );
+};
 
-                            }
+},[]);
 
-                            break;
+const createPeerConnection=async(remoteId,initiator=false)=>{
 
+if(peersRef.current[remoteId]) return;
 
-                        case "ice-candidate":
+const peer=new RTCPeerConnection(rtcConfig);
 
-                            if (peersRef.current[data.caller_id]) {
+peersRef.current[remoteId]=peer;
 
-                                await peersRef.current[data.caller_id]
-                                    .addIceCandidate(
-                                        new RTCIceCandidate(data.candidate)
-                                    );
+streamRef.current.getTracks().forEach(track=>{
+peer.addTrack(track,streamRef.current);
+});
 
-                            }
+peer.ontrack=(event)=>{
+const remoteStream=event.streams[0];
 
-                            break;
+setParticipants(prev=>{
+const exists=prev.find(p=>p.id===remoteId);
 
+if(exists){
+return prev;
+}
 
-                        case "user-disconnected":
+return [...prev,{id:remoteId,stream:remoteStream}];
+});
+};
 
-                            removePeer(data.user_id);
+peer.onicecandidate=(event)=>{
 
-                            break;
+if(event.candidate){
 
-                    }
+wsRef.current.send(JSON.stringify({
+type:"ice-candidate",
+candidate:event.candidate,
+caller_id:user.id,
+target_id:remoteId
+}));
 
-                }).catch(err => console.error("WS processing error:", err));
+}
 
-            };
+};
 
-        };
+if(initiator){
 
-        startMeeting();
+const offer=await peer.createOffer();
 
-        return () => {
+await peer.setLocalDescription(offer);
 
-            Object.values(peersRef.current).forEach(peer => peer.close());
+wsRef.current.send(JSON.stringify({
+type:"offer",
+offer:offer,
+caller_id:user.id,
+target_id:remoteId
+}));
 
-            if (wsRef.current) wsRef.current.close();
+}
 
-            // Ensure camera and microphone tracks are fully stopped
-            if (streamRef.current) {
-                streamRef.current.getTracks().forEach(track => track.stop());
-            }
+};
 
-        };
+const handleOffer=async(offer,callerId)=>{
 
-    }, []);
+if(peersRef.current[callerId]) return;
 
+const peer=new RTCPeerConnection(rtcConfig);
 
+peersRef.current[callerId]=peer;
 
+streamRef.current.getTracks().forEach(track=>{
+peer.addTrack(track,streamRef.current);
+});
 
-    const createPeerConnection = async (remoteId, initiator = false) => {
+peer.ontrack=(event)=>{
+const remoteStream=event.streams[0];
 
-        if (peersRef.current[remoteId]) return;
+setParticipants(prev=>{
+const exists=prev.find(p=>p.id===callerId);
 
-        const peer = new RTCPeerConnection(rtcConfig);
+if(exists){
+return prev;
+}
 
-        peersRef.current[remoteId] = peer;
+return [...prev,{id:callerId,stream:remoteStream}];
+});
+};
 
-        streamRef.current.getTracks().forEach(track => {
-            peer.addTrack(track, streamRef.current);
-        });
+peer.onicecandidate=(event)=>{
 
-        peer.ontrack = (event) => {
+if(event.candidate){
 
-            console.log("Received remote stream from", remoteId);
-            console.log(streamRef.current.getTracks());
+wsRef.current.send(JSON.stringify({
+type:"ice-candidate",
+candidate:event.candidate,
+caller_id:user.id,
+target_id:callerId
+}));
 
-            addParticipant(remoteId, event.streams[0]);
+}
 
-        };
+};
 
-        peer.oniceconnectionstatechange = () => {
-            console.log(`ICE Connection State [${remoteId}]:`, peer.iceConnectionState);
-        };
+await peer.setRemoteDescription(new RTCSessionDescription(offer));
 
-        peer.onicecandidate = (event) => {
+const answer=await peer.createAnswer();
 
-            if (event.candidate) {
+await peer.setLocalDescription(answer);
 
-                wsRef.current.send(JSON.stringify({
-                    type: "ice-candidate",
-                    candidate: event.candidate,
-                    caller_id: user.id,
-                    target_id: remoteId
-                }));
+wsRef.current.send(JSON.stringify({
+type:"answer",
+answer:answer,
+caller_id:user.id,
+target_id:callerId
+}));
 
-            }
+};
 
-        };
+const removePeer=(id)=>{
 
-        if (initiator) {
+if(peersRef.current[id]){
+peersRef.current[id].close();
+delete peersRef.current[id];
+}
 
-            const offer = await peer.createOffer();
+setParticipants(prev=>prev.filter(p=>p.id!==id));
 
-            await peer.setLocalDescription(offer);
+};
 
-            wsRef.current.send(JSON.stringify({
-                type: "offer",
-                offer: offer,
-                caller_id: user.id,
-                target_id: remoteId
-            }));
+return(
 
-        }
+<div>
 
-    };
+<h2>Meeting Room {meetingId}</h2>
 
+<h3>Your Camera</h3>
 
+<video
+ref={localVideoRef}
+autoPlay
+muted
+playsInline
+width="300"
+/>
 
+<h3>Participants</h3>
 
-    const handleOffer = async (offer, callerId) => {
+<div style={{display:"flex",flexWrap:"wrap"}}>
 
-        if (!peersRef.current[callerId]) {
+{participants.map(p=>(
 
-            await createPeerConnection(callerId, false);
+<video
+key={p.id}
+autoPlay
+playsInline
+width="300"
+ref={video=>{
+if(video && video.srcObject!==p.stream){
+video.srcObject=p.stream;
+}
+}}
+/>
 
-        }
+))}
 
-        const peer = peersRef.current[callerId];
+</div>
 
-        await peer.setRemoteDescription(
-            new RTCSessionDescription(offer)
-        );
+</div>
 
-        const answer = await peer.createAnswer();
-
-        await peer.setLocalDescription(answer);
-
-        wsRef.current.send(JSON.stringify({
-            type: "answer",
-            answer: answer,
-            caller_id: user.id,
-            target_id: callerId
-        }));
-
-    };
-
-
-
-
-    const addParticipant = (id, stream) => {
-
-        setParticipants(prev => {
-
-            const exists = prev.find(p => p.id === id);
-
-            if (exists) {
-
-                return prev.map(p =>
-                    p.id === id ? { ...p, stream } : p
-                );
-
-            }
-
-            return [...prev, { id, stream }];
-
-        });
-
-    };
-
-
-
-
-    const removePeer = (id) => {
-
-        if (peersRef.current[id]) {
-
-            peersRef.current[id].close();
-
-            delete peersRef.current[id];
-
-        }
-
-        setParticipants(prev =>
-            prev.filter(p => p.id !== id)
-        );
-
-    };
-
-
-
-
-    return (
-
-        <div>
-
-            <h2>Meeting Room {meetingId}</h2>
-
-            <video
-                ref={localVideoRef}
-                autoPlay
-                muted
-                playsInline
-                width="300"
-            />
-
-            <div style={{ display: "flex", flexWrap: "wrap" }}>
-
-                {participants.map(p => (
-
-                    <video
-                        key={p.id}
-                        autoPlay
-                        playsInline
-                        width="300"
-                        ref={video => {
-
-                            if (video && video.srcObject !== p.stream) {
-
-                                video.srcObject = p.stream;
-
-                            }
-
-                        }}
-                    />
-
-                ))}
-
-            </div>
-
-        </div>
-
-    );
+);
 
 }
