@@ -76,13 +76,57 @@ export default function MeetingRoom({ meetingId, user, onLeave, initialStream, i
             wsRef.current = ws;
 
             ws.onopen = () => {
-
+                console.log("[WebRTC] WebSocket Connected. Sending join-room.");
                 ws.send(JSON.stringify({
                     type: "join-room",
                     user_id: user.id,
                     name: user.name
                 }));
 
+                // Fetch existing participants from API to trigger mesh connections
+                const fetchParticipantsAndConnect = async () => {
+                    try {
+                        const res = await fetch(`https://snappier-reapply-kieth.ngrok-free.dev/participants/list/${meetingId}/`);
+                        if (res.ok) {
+                            const data = await res.json();
+                            const existingUsers = Array.isArray(data) ? data : (data.participants || data.users || []);
+                            console.log('[WebRTC] Fetched existing participants from API:', existingUsers);
+
+                            setParticipants(prev => {
+                                const newParticipants = [...prev];
+                                existingUsers.forEach(u => {
+                                    const isString = typeof u === 'string';
+                                    if (isString && u === user?.name) return;
+                                    if (!isString && (u.user_id === user?.id || u.id === user?.id || u.name === user?.name)) return;
+
+                                    const pId = isString ? u : (u.user_id || u.id || u.pk || u.name);
+                                    const pName = isString ? u : (u.name || `User ${pId}`);
+                                    if (!pId) return;
+
+                                    if (!newParticipants.find(p => p.id === pId || p.name === pName)) {
+                                        newParticipants.push({
+                                            id: pId,
+                                            name: pName,
+                                            avatar: `https://api.dicebear.com/7.x/avataaars/svg?seed=${pId}`,
+                                            raisedHand: false,
+                                            stream: null
+                                        });
+
+                                        // Initiate connection securely
+                                        if (!peersRef.current[pId]) {
+                                            createPeerConnection(pId, true);
+                                        }
+                                    }
+                                });
+                                return newParticipants;
+                            });
+                        }
+                    } catch (err) {
+                        console.warn('Failed to fetch initial participant list:', err);
+                    }
+                };
+
+                fetchParticipantsAndConnect();
             };
 
             ws.onmessage = async (event) => {
@@ -283,31 +327,26 @@ export default function MeetingRoom({ meetingId, user, onLeave, initialStream, i
 
     // Add participant video
     const addParticipant = (userId, remoteStream) => {
-
         setParticipants(prev => {
-
             const exists = prev.find(p => p.id === userId);
-
             if (exists) {
-
                 return prev.map(p =>
                     p.id === userId
                         ? { ...p, stream: remoteStream }
                         : p
                 );
-
             }
-
             return [
                 ...prev,
                 {
                     id: userId,
-                    stream: remoteStream
+                    name: `User ${userId}`,
+                    avatar: `https://api.dicebear.com/7.x/avataaars/svg?seed=${userId}`,
+                    stream: remoteStream,
+                    raisedHand: false
                 }
             ];
-
         });
-
     };
 
 
@@ -625,4 +664,4 @@ export default function MeetingRoom({ meetingId, user, onLeave, initialStream, i
             </footer>
         </div>
     );
- }
+}
