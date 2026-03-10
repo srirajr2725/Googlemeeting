@@ -3,7 +3,10 @@ import { Mic, MicOff, Video as VideoIcon, VideoOff, Phone, MonitorUp, MoreVertic
 import './MeetingRoom.css';
 
 const rtcConfig = {
-    iceServers: [{ urls: "stun:stun.l.google.com:19302" }]
+    iceServers: [
+        { urls: "stun:stun.l.google.com:19302" },
+        { urls: "stun:stun1.l.google.com:19302" }
+    ]
 };
 
 export default function MeetingRoom({ meetingId, user, onLeave }) {
@@ -18,8 +21,9 @@ export default function MeetingRoom({ meetingId, user, onLeave }) {
 
     const [isMicOn, setIsMicOn] = useState(true);
     const [isVideoOn, setIsVideoOn] = useState(true);
-    const [currentTime, setCurrentTime] = useState(new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }));
-
+    const [currentTime, setCurrentTime] = useState(
+        new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+    );
 
     const safeSend = (data) => {
 
@@ -34,8 +38,10 @@ export default function MeetingRoom({ meetingId, user, onLeave }) {
             const interval = setInterval(() => {
 
                 if (wsRef.current.readyState === WebSocket.OPEN) {
+
                     wsRef.current.send(JSON.stringify(data));
                     clearInterval(interval);
+
                 }
 
             }, 50);
@@ -43,7 +49,6 @@ export default function MeetingRoom({ meetingId, user, onLeave }) {
         }
 
     };
-
 
     useEffect(() => {
 
@@ -59,33 +64,27 @@ export default function MeetingRoom({ meetingId, user, onLeave }) {
 
     }, []);
 
-
-
     const toggleMic = () => {
 
         if (localStreamRef.current) {
 
             localStreamRef.current.getAudioTracks().forEach(track => track.enabled = !isMicOn);
-
             setIsMicOn(!isMicOn);
 
         }
 
     };
 
-
     const toggleVideo = () => {
 
         if (localStreamRef.current) {
 
             localStreamRef.current.getVideoTracks().forEach(track => track.enabled = !isVideoOn);
-
             setIsVideoOn(!isVideoOn);
 
         }
 
     };
-
 
     useEffect(() => {
 
@@ -101,13 +100,11 @@ export default function MeetingRoom({ meetingId, user, onLeave }) {
             if (localVideoRef.current)
                 localVideoRef.current.srcObject = stream;
 
-
             const ws = new WebSocket(
                 `wss://snappier-reapply-kieth.ngrok-free.dev/ws/meeting/${meetingId}/`
             );
 
             wsRef.current = ws;
-
 
             ws.onopen = () => {
 
@@ -118,7 +115,6 @@ export default function MeetingRoom({ meetingId, user, onLeave }) {
                 });
 
             };
-
 
             ws.onmessage = async (event) => {
 
@@ -139,7 +135,6 @@ export default function MeetingRoom({ meetingId, user, onLeave }) {
 
                         break;
 
-
                     case "user-connected":
 
                         if (data.user_id !== user.id)
@@ -147,13 +142,11 @@ export default function MeetingRoom({ meetingId, user, onLeave }) {
 
                         break;
 
-
                     case "offer":
 
                         await handleOffer(data.offer, data.caller_id);
 
                         break;
-
 
                     case "answer":
 
@@ -161,13 +154,11 @@ export default function MeetingRoom({ meetingId, user, onLeave }) {
 
                         break;
 
-
                     case "ice-candidate":
 
                         handleCandidate(data);
 
                         break;
-
 
                     case "user-disconnected":
 
@@ -185,27 +176,22 @@ export default function MeetingRoom({ meetingId, user, onLeave }) {
 
     }, []);
 
-
-
     const createPeer = async (remoteId, initiator = false) => {
 
         if (peersRef.current[remoteId]) return;
 
         const peer = new RTCPeerConnection(rtcConfig);
-
         peersRef.current[remoteId] = peer;
 
-
         localStreamRef.current.getTracks().forEach(track => {
-
             peer.addTrack(track, localStreamRef.current);
-
         });
-
 
         peer.ontrack = (event) => {
 
             const remoteStream = event.streams[0];
+
+            if (!remoteStream) return;
 
             setParticipants(prev => {
 
@@ -225,7 +211,6 @@ export default function MeetingRoom({ meetingId, user, onLeave }) {
 
         };
 
-
         peer.onicecandidate = (event) => {
 
             if (!event.candidate) return;
@@ -239,6 +224,11 @@ export default function MeetingRoom({ meetingId, user, onLeave }) {
 
         };
 
+        peer.onconnectionstatechange = () => {
+
+            console.log("Connection state:", peer.connectionState);
+
+        };
 
         if (initiator) {
 
@@ -257,8 +247,6 @@ export default function MeetingRoom({ meetingId, user, onLeave }) {
 
     };
 
-
-
     const handleOffer = async (offer, callerId) => {
 
         let peer = peersRef.current[callerId];
@@ -275,6 +263,8 @@ export default function MeetingRoom({ meetingId, user, onLeave }) {
             peer.ontrack = (event) => {
 
                 const remoteStream = event.streams[0];
+
+                if (!remoteStream) return;
 
                 setParticipants(prev => {
 
@@ -294,7 +284,6 @@ export default function MeetingRoom({ meetingId, user, onLeave }) {
 
             };
 
-
             peer.onicecandidate = (event) => {
 
                 if (!event.candidate) return;
@@ -310,19 +299,15 @@ export default function MeetingRoom({ meetingId, user, onLeave }) {
 
         }
 
-
         await peer.setRemoteDescription(
             new RTCSessionDescription(offer)
         );
 
-
         flushCandidates(callerId);
-
 
         const answer = await peer.createAnswer();
 
         await peer.setLocalDescription(answer);
-
 
         safeSend({
             type: "answer",
@@ -332,7 +317,6 @@ export default function MeetingRoom({ meetingId, user, onLeave }) {
         });
 
     };
-
 
     const handleAnswer = async (answer, callerId) => {
 
@@ -349,7 +333,6 @@ export default function MeetingRoom({ meetingId, user, onLeave }) {
         flushCandidates(callerId);
 
     };
-
 
     const handleCandidate = async (data) => {
 
@@ -372,7 +355,6 @@ export default function MeetingRoom({ meetingId, user, onLeave }) {
 
     };
 
-
     const flushCandidates = async (peerId) => {
 
         const peer = peersRef.current[peerId];
@@ -392,7 +374,6 @@ export default function MeetingRoom({ meetingId, user, onLeave }) {
 
     };
 
-
     const removePeer = (id) => {
 
         if (!peersRef.current[id]) return;
@@ -403,7 +384,6 @@ export default function MeetingRoom({ meetingId, user, onLeave }) {
         setParticipants(prev => prev.filter(p => p.id !== id));
 
     };
-
 
     return (
         <div className="meet-container">
@@ -418,7 +398,6 @@ export default function MeetingRoom({ meetingId, user, onLeave }) {
                             muted
                             playsInline
                         />
-
                         <div className="meet-label">
                             {!isMicOn && (
                                 <div className="meet-mic-indicator muted">
@@ -442,13 +421,11 @@ export default function MeetingRoom({ meetingId, user, onLeave }) {
                                 }}
                             />
                             <div className="meet-label">
-                                <div className="meet-mic-indicator">
-                                    <Mic size={14} color="white" />
-                                </div>
-                                Participant {p.id.toString().substring(0, 4)}...
+                                Participant {p.id}
                             </div>
                         </div>
                     ))}
+
                 </div>
             </div>
 
@@ -508,5 +485,4 @@ export default function MeetingRoom({ meetingId, user, onLeave }) {
             </div>
         </div>
     );
-
 }
