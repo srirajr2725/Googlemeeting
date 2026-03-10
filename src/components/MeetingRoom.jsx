@@ -16,31 +16,72 @@ export default function MeetingRoom({ meetingId, user, onLeave }) {
 
     const [participants, setParticipants] = useState([]);
 
-    // UI state for bottom controls
     const [isMicOn, setIsMicOn] = useState(true);
     const [isVideoOn, setIsVideoOn] = useState(true);
     const [currentTime, setCurrentTime] = useState(new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }));
+
+
+    /* SAFE SEND */
+    const safeSend = (data) => {
+
+        if (!wsRef.current) return;
+
+        if (wsRef.current.readyState === WebSocket.OPEN) {
+
+            wsRef.current.send(JSON.stringify(data));
+
+        } else {
+
+            const interval = setInterval(() => {
+
+                if (wsRef.current.readyState === WebSocket.OPEN) {
+
+                    wsRef.current.send(JSON.stringify(data));
+                    clearInterval(interval);
+
+                }
+
+            }, 50);
+
+        }
+
+    };
+
 
     useEffect(() => {
         const timer = setInterval(() => {
             setCurrentTime(new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }));
         }, 60000);
+
         return () => clearInterval(timer);
     }, []);
 
+
     const toggleMic = () => {
+
         if (localStreamRef.current) {
+
             localStreamRef.current.getAudioTracks().forEach(track => track.enabled = !isMicOn);
+
             setIsMicOn(!isMicOn);
+
         }
+
     };
 
+
     const toggleVideo = () => {
+
         if (localStreamRef.current) {
+
             localStreamRef.current.getVideoTracks().forEach(track => track.enabled = !isVideoOn);
+
             setIsVideoOn(!isVideoOn);
+
         }
+
     };
+
 
     useEffect(() => {
 
@@ -52,7 +93,10 @@ export default function MeetingRoom({ meetingId, user, onLeave }) {
             });
 
             localStreamRef.current = stream;
-            localVideoRef.current.srcObject = stream;
+
+            if (localVideoRef.current)
+                localVideoRef.current.srcObject = stream;
+
 
             const ws = new WebSocket(
                 `wss://snappier-reapply-kieth.ngrok-free.dev/ws/meeting/${meetingId}/`
@@ -60,19 +104,22 @@ export default function MeetingRoom({ meetingId, user, onLeave }) {
 
             wsRef.current = ws;
 
+
             ws.onopen = () => {
 
-                ws.send(JSON.stringify({
+                safeSend({
                     type: "join-room",
                     user_id: user.id,
                     name: user.name
-                }));
+                });
 
             };
+
 
             ws.onmessage = async (event) => {
 
                 const data = JSON.parse(event.data);
+
                 console.log("WS EVENT:", data);
 
                 switch (data.type) {
@@ -80,20 +127,22 @@ export default function MeetingRoom({ meetingId, user, onLeave }) {
                     case "existing-users":
 
                         data.users.forEach(u => {
-                            if (u.user_id !== user.id) {
+
+                            if (u.user_id !== user.id)
                                 createPeer(u.user_id, true);
-                            }
+
                         });
 
                         break;
 
+
                     case "user-connected":
 
-                        if (data.user_id !== user.id) {
+                        if (data.user_id !== user.id)
                             createPeer(data.user_id, true);
-                        }
 
                         break;
+
 
                     case "offer":
 
@@ -101,11 +150,17 @@ export default function MeetingRoom({ meetingId, user, onLeave }) {
 
                         break;
 
+
                     case "answer":
 
                         const peer = peersRef.current[data.caller_id];
 
                         if (!peer) return;
+
+                        if (peer.signalingState !== "have-local-offer") {
+                            console.log("Ignoring duplicate answer");
+                            return;
+                        }
 
                         await peer.setRemoteDescription(
                             new RTCSessionDescription(data.answer)
@@ -115,18 +170,22 @@ export default function MeetingRoom({ meetingId, user, onLeave }) {
 
                         break;
 
+
                     case "ice-candidate":
 
                         handleCandidate(data);
 
                         break;
 
+
                     case "user-disconnected":
 
                         removePeer(data.user_id);
 
                         break;
+
                 }
+
             };
 
         };
@@ -135,16 +194,21 @@ export default function MeetingRoom({ meetingId, user, onLeave }) {
 
     }, []);
 
+
+
     const createPeer = async (remoteId, initiator = false) => {
 
         if (peersRef.current[remoteId]) return;
 
         const peer = new RTCPeerConnection(rtcConfig);
+
         peersRef.current[remoteId] = peer;
+
 
         localStreamRef.current.getTracks().forEach(track => {
             peer.addTrack(track, localStreamRef.current);
         });
+
 
         peer.ontrack = (event) => {
 
@@ -155,9 +219,11 @@ export default function MeetingRoom({ meetingId, user, onLeave }) {
                 const exists = prev.find(p => p.id === remoteId);
 
                 if (exists) {
+
                     return prev.map(p =>
                         p.id === remoteId ? { ...p, stream: remoteStream } : p
                     );
+
                 }
 
                 return [...prev, { id: remoteId, stream: remoteStream }];
@@ -166,94 +232,113 @@ export default function MeetingRoom({ meetingId, user, onLeave }) {
 
         };
 
+
         peer.onicecandidate = (event) => {
 
             if (!event.candidate) return;
 
-            wsRef.current.send(JSON.stringify({
+            safeSend({
                 type: "ice-candidate",
                 candidate: event.candidate,
                 caller_id: user.id,
                 target_id: remoteId
-            }));
+            });
 
         };
+
 
         if (initiator) {
 
             const offer = await peer.createOffer();
+
             await peer.setLocalDescription(offer);
 
-            wsRef.current.send(JSON.stringify({
+            safeSend({
                 type: "offer",
                 offer,
                 caller_id: user.id,
                 target_id: remoteId
-            }));
+            });
 
         }
 
     };
 
+
     const handleOffer = async (offer, callerId) => {
 
-        const peer = new RTCPeerConnection(rtcConfig);
-        peersRef.current[callerId] = peer;
+        let peer = peersRef.current[callerId];
 
-        localStreamRef.current.getTracks().forEach(track => {
-            peer.addTrack(track, localStreamRef.current);
-        });
+        if (!peer) {
 
-        peer.ontrack = (event) => {
+            peer = new RTCPeerConnection(rtcConfig);
+            peersRef.current[callerId] = peer;
 
-            const remoteStream = event.streams[0];
-
-            setParticipants(prev => {
-
-                const exists = prev.find(p => p.id === callerId);
-
-                if (exists) {
-                    return prev.map(p =>
-                        p.id === callerId ? { ...p, stream: remoteStream } : p
-                    );
-                }
-
-                return [...prev, { id: callerId, stream: remoteStream }];
-
+            localStreamRef.current.getTracks().forEach(track => {
+                peer.addTrack(track, localStreamRef.current);
             });
 
-        };
+            peer.ontrack = (event) => {
 
-        peer.onicecandidate = (event) => {
+                const remoteStream = event.streams[0];
 
-            if (!event.candidate) return;
+                setParticipants(prev => {
 
-            wsRef.current.send(JSON.stringify({
-                type: "ice-candidate",
-                candidate: event.candidate,
-                caller_id: user.id,
-                target_id: callerId
-            }));
+                    const exists = prev.find(p => p.id === callerId);
 
-        };
+                    if (exists) {
+
+                        return prev.map(p =>
+                            p.id === callerId ? { ...p, stream: remoteStream } : p
+                        );
+
+                    }
+
+                    return [...prev, { id: callerId, stream: remoteStream }];
+
+                });
+
+            };
+
+
+            peer.onicecandidate = (event) => {
+
+                if (!event.candidate) return;
+
+                safeSend({
+                    type: "ice-candidate",
+                    candidate: event.candidate,
+                    caller_id: user.id,
+                    target_id: callerId
+                });
+
+            };
+
+        }
+
 
         await peer.setRemoteDescription(
             new RTCSessionDescription(offer)
         );
 
+
         flushCandidates(callerId);
 
+
         const answer = await peer.createAnswer();
+
         await peer.setLocalDescription(answer);
 
-        wsRef.current.send(JSON.stringify({
+
+        safeSend({
             type: "answer",
             answer,
             caller_id: user.id,
             target_id: callerId
-        }));
+        });
 
     };
+
 
     const handleCandidate = async (data) => {
 
@@ -261,9 +346,8 @@ export default function MeetingRoom({ meetingId, user, onLeave }) {
 
         if (!peer || !peer.remoteDescription) {
 
-            if (!candidateQueue.current[data.caller_id]) {
+            if (!candidateQueue.current[data.caller_id])
                 candidateQueue.current[data.caller_id] = [];
-            }
 
             candidateQueue.current[data.caller_id].push(data.candidate);
 
@@ -277,6 +361,7 @@ export default function MeetingRoom({ meetingId, user, onLeave }) {
 
     };
 
+
     const flushCandidates = async (peerId) => {
 
         const peer = peersRef.current[peerId];
@@ -285,12 +370,17 @@ export default function MeetingRoom({ meetingId, user, onLeave }) {
         if (!queue || !peer) return;
 
         for (const candidate of queue) {
-            await peer.addIceCandidate(new RTCIceCandidate(candidate));
+
+            await peer.addIceCandidate(
+                new RTCIceCandidate(candidate)
+            );
+
         }
 
         delete candidateQueue.current[peerId];
 
     };
+
 
     const removePeer = (id) => {
 
@@ -303,12 +393,12 @@ export default function MeetingRoom({ meetingId, user, onLeave }) {
 
     };
 
+
     return (
         <div className="meet-container">
             <div className="meet-main">
                 <div className="meet-grid">
 
-                    {/* Local User */}
                     <div className="meet-tile">
                         <video
                             ref={localVideoRef}
@@ -317,6 +407,7 @@ export default function MeetingRoom({ meetingId, user, onLeave }) {
                             muted
                             playsInline
                         />
+
                         <div className="meet-label">
                             {!isMicOn && (
                                 <div className="meet-mic-indicator muted">
@@ -327,7 +418,6 @@ export default function MeetingRoom({ meetingId, user, onLeave }) {
                         </div>
                     </div>
 
-                    {/* Remote Participants */}
                     {participants.map(p => (
                         <div className="meet-tile" key={p.id}>
                             <video
@@ -348,72 +438,58 @@ export default function MeetingRoom({ meetingId, user, onLeave }) {
                             </div>
                         </div>
                     ))}
-
                 </div>
             </div>
 
-            {/* Bottom Controls Bar */}
             <div className="meet-bottom-bar">
 
-                {/* Left: Time and Meeting Code */}
                 <div className="meet-bar-left">
                     {currentTime} | {meetingId.substring(0, 11)}...
                 </div>
 
-                {/* Center: Main Controls */}
                 <div className="meet-bar-center">
-                    <button
-                        className={`meet-btn ${!isMicOn ? 'active-red' : ''}`}
-                        onClick={toggleMic}
-                        title={isMicOn ? "Turn off microphone" : "Turn on microphone"}
-                    >
+
+                    <button className={`meet-btn ${!isMicOn ? 'active-red' : ''}`} onClick={toggleMic}>
                         {isMicOn ? <Mic size={20} /> : <MicOff size={20} />}
                     </button>
 
-                    <button
-                        className={`meet-btn ${!isVideoOn ? 'active-red' : ''}`}
-                        onClick={toggleVideo}
-                        title={isVideoOn ? "Turn off camera" : "Turn on camera"}
-                    >
+                    <button className={`meet-btn ${!isVideoOn ? 'active-red' : ''}`} onClick={toggleVideo}>
                         {isVideoOn ? <VideoIcon size={20} /> : <VideoOff size={20} />}
                     </button>
 
-                    <button className="meet-btn" title="Turn on captions">
+                    <button className="meet-btn">
                         <Captions size={20} />
                     </button>
 
-                    <button className="meet-btn" title="Raise hand">
+                    <button className="meet-btn">
                         <Hand size={20} />
                     </button>
 
-                    <button className="meet-btn" title="Present now">
+                    <button className="meet-btn">
                         <MonitorUp size={20} />
                     </button>
 
-                    <button className="meet-btn" title="More options">
+                    <button className="meet-btn">
                         <MoreVertical size={20} />
                     </button>
 
                     <button className="meet-btn-end" onClick={() => {
-                        if (onLeave) {
-                            onLeave();
-                        } else {
-                            window.location.reload();
-                        }
-                    }} title="Leave call">
+                        if (onLeave) onLeave();
+                        else window.location.reload();
+                    }}>
                         <Phone size={24} style={{ transform: 'rotate(135deg)' }} />
                     </button>
+
                 </div>
 
-                {/* Right: Info and Chat */}
                 <div className="meet-bar-right">
-                    <button className="meet-small-btn" title="Meeting details">
+                    <button className="meet-small-btn">
                         <Info size={20} />
                     </button>
-                    <button className="meet-small-btn" title="People">
+                    <button className="meet-small-btn">
                         <Users size={20} />
                     </button>
-                    <button className="meet-small-btn" title="Chat with everyone">
+                    <button className="meet-small-btn">
                         <MessageSquare size={20} />
                     </button>
                 </div>
