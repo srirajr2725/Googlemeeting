@@ -1,15 +1,14 @@
 import React, { useEffect, useRef, useState } from "react";
 
 const rtcConfig = {
-  iceServers: [
-    { urls: "stun:stun.l.google.com:19302" }
-  ]
+  iceServers: [{ urls: "stun:stun.l.google.com:19302" }]
 };
 
 export default function MeetingRoom({ meetingId, user }) {
 
   const wsRef = useRef(null);
   const peersRef = useRef({});
+  const candidateQueue = useRef({});
   const localStreamRef = useRef(null);
   const localVideoRef = useRef(null);
 
@@ -46,7 +45,6 @@ export default function MeetingRoom({ meetingId, user }) {
       ws.onmessage = async (event) => {
 
         const data = JSON.parse(event.data);
-
         console.log("WS EVENT:", data);
 
         switch (data.type) {
@@ -54,11 +52,9 @@ export default function MeetingRoom({ meetingId, user }) {
           case "existing-users":
 
             data.users.forEach(u => {
-
               if (u.user_id !== user.id) {
                 createPeer(u.user_id, true);
               }
-
             });
 
             break;
@@ -83,33 +79,17 @@ export default function MeetingRoom({ meetingId, user }) {
 
             if (!peer) return;
 
-            if (peer.signalingState === "have-local-offer") {
+            await peer.setRemoteDescription(
+              new RTCSessionDescription(data.answer)
+            );
 
-              await peer.setRemoteDescription(
-                new RTCSessionDescription(data.answer)
-              );
-
-            }
+            flushCandidates(data.caller_id);
 
             break;
 
           case "ice-candidate":
 
-            const icePeer = peersRef.current[data.caller_id];
-
-            if (!icePeer) return;
-
-            try {
-
-              await icePeer.addIceCandidate(
-                new RTCIceCandidate(data.candidate)
-              );
-
-            } catch (err) {
-
-              console.log("ICE candidate error", err);
-
-            }
+            handleCandidate(data);
 
             break;
 
@@ -118,9 +98,7 @@ export default function MeetingRoom({ meetingId, user }) {
             removePeer(data.user_id);
 
             break;
-
         }
-
       };
 
     };
@@ -134,7 +112,6 @@ export default function MeetingRoom({ meetingId, user }) {
     if (peersRef.current[remoteId]) return;
 
     const peer = new RTCPeerConnection(rtcConfig);
-
     peersRef.current[remoteId] = peer;
 
     localStreamRef.current.getTracks().forEach(track => {
@@ -151,9 +128,7 @@ export default function MeetingRoom({ meetingId, user }) {
 
         if (exists) {
           return prev.map(p =>
-            p.id === remoteId
-              ? { ...p, stream: remoteStream }
-              : p
+            p.id === remoteId ? { ...p, stream: remoteStream } : p
           );
         }
 
@@ -168,12 +143,10 @@ export default function MeetingRoom({ meetingId, user }) {
       if (!event.candidate) return;
 
       wsRef.current.send(JSON.stringify({
-
         type: "ice-candidate",
         candidate: event.candidate,
         caller_id: user.id,
         target_id: remoteId
-
       }));
 
     };
@@ -181,16 +154,13 @@ export default function MeetingRoom({ meetingId, user }) {
     if (initiator) {
 
       const offer = await peer.createOffer();
-
       await peer.setLocalDescription(offer);
 
       wsRef.current.send(JSON.stringify({
-
         type: "offer",
         offer,
         caller_id: user.id,
         target_id: remoteId
-
       }));
 
     }
@@ -199,10 +169,7 @@ export default function MeetingRoom({ meetingId, user }) {
 
   const handleOffer = async (offer, callerId) => {
 
-    if (peersRef.current[callerId]) return;
-
     const peer = new RTCPeerConnection(rtcConfig);
-
     peersRef.current[callerId] = peer;
 
     localStreamRef.current.getTracks().forEach(track => {
@@ -219,9 +186,7 @@ export default function MeetingRoom({ meetingId, user }) {
 
         if (exists) {
           return prev.map(p =>
-            p.id === callerId
-              ? { ...p, stream: remoteStream }
-              : p
+            p.id === callerId ? { ...p, stream: remoteStream } : p
           );
         }
 
@@ -236,12 +201,10 @@ export default function MeetingRoom({ meetingId, user }) {
       if (!event.candidate) return;
 
       wsRef.current.send(JSON.stringify({
-
         type: "ice-candidate",
         candidate: event.candidate,
         caller_id: user.id,
         target_id: callerId
-
       }));
 
     };
@@ -250,18 +213,54 @@ export default function MeetingRoom({ meetingId, user }) {
       new RTCSessionDescription(offer)
     );
 
-    const answer = await peer.createAnswer();
+    flushCandidates(callerId);
 
+    const answer = await peer.createAnswer();
     await peer.setLocalDescription(answer);
 
     wsRef.current.send(JSON.stringify({
-
       type: "answer",
       answer,
       caller_id: user.id,
       target_id: callerId
-
     }));
+
+  };
+
+  const handleCandidate = async (data) => {
+
+    const peer = peersRef.current[data.caller_id];
+
+    if (!peer || !peer.remoteDescription) {
+
+      if (!candidateQueue.current[data.caller_id]) {
+        candidateQueue.current[data.caller_id] = [];
+      }
+
+      candidateQueue.current[data.caller_id].push(data.candidate);
+
+      return;
+
+    }
+
+    await peer.addIceCandidate(
+      new RTCIceCandidate(data.candidate)
+    );
+
+  };
+
+  const flushCandidates = async (peerId) => {
+
+    const peer = peersRef.current[peerId];
+    const queue = candidateQueue.current[peerId];
+
+    if (!queue || !peer) return;
+
+    for (const candidate of queue) {
+      await peer.addIceCandidate(new RTCIceCandidate(candidate));
+    }
+
+    delete candidateQueue.current[peerId];
 
   };
 
@@ -270,12 +269,9 @@ export default function MeetingRoom({ meetingId, user }) {
     if (!peersRef.current[id]) return;
 
     peersRef.current[id].close();
-
     delete peersRef.current[id];
 
-    setParticipants(prev =>
-      prev.filter(p => p.id !== id)
-    );
+    setParticipants(prev => prev.filter(p => p.id !== id));
 
   };
 
@@ -297,11 +293,7 @@ export default function MeetingRoom({ meetingId, user }) {
 
       <h3>Participants</h3>
 
-      <div style={{
-        display: "flex",
-        flexWrap: "wrap",
-        gap: "10px"
-      }}>
+      <div style={{ display: "flex", flexWrap: "wrap", gap: "10px" }}>
 
         {participants.map(p => (
 
@@ -312,13 +304,7 @@ export default function MeetingRoom({ meetingId, user }) {
             controls
             width="300"
             ref={(video) => {
-
-              if (video) {
-
-                video.srcObject = p.stream;
-
-              }
-
+              if (video) video.srcObject = p.stream;
             }}
           />
 
