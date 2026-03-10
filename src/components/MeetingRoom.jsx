@@ -44,6 +44,44 @@ const MeetingRoom = ({ meetingId, onLeave, initialStream, initialMic, initialVid
             { id: Date.now(), user: 'System', text: `You have joined room: ${meetingId}`, time: 'Now' }
         ]);
 
+        // Fetch existing participants currently in the room
+        const fetchParticipants = async () => {
+            try {
+                const res = await fetch(`https://snappier-reapply-kieth.ngrok-free.dev/participants/list/${meetingId}/`);
+                if (res.ok) {
+                    const data = await res.json();
+                    // Assuming data returns an array, optionally adapt parsing based on actual response structure
+                    const existingUsers = Array.isArray(data) ? data : (data.participants || data.users || []);
+                    console.log('Fetched existing participants:', existingUsers);
+
+                    if (existingUsers.length > 0) {
+                        setParticipants(prev => {
+                            const newParticipants = [...prev];
+                            existingUsers.forEach(u => {
+                                // Skip adding ourselves if returned by backend
+                                if (u.user_id === user?.id || u.id === user?.id) return;
+
+                                const pId = u.user_id || u.id || u.pk;
+                                if (!newParticipants.find(p => p.id === pId)) {
+                                    newParticipants.push({
+                                        id: pId,
+                                        name: u.name || `User ${pId}`,
+                                        avatar: `https://api.dicebear.com/7.x/avataaars/svg?seed=${pId}`,
+                                        raisedHand: false
+                                    });
+                                }
+                            });
+                            return newParticipants;
+                        });
+                    }
+                }
+            } catch (err) {
+                console.warn('Failed to fetch initial participant list:', err);
+            }
+        };
+
+        fetchParticipants();
+
         // Connect to Django Channels WebSocket Endpoint
         // Adjust the wss:// URL if your Django routing differs (like /ws/chat/ or wss://localhost).
         const wsUrl = `wss://snappier-reapply-kieth.ngrok-free.dev/ws/meeting/${meetingId}/`;
