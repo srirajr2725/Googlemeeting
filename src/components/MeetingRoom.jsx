@@ -17,13 +17,12 @@ export default function MeetingRoom({ meetingId, user }) {
   const peersRef = useRef({});
   const localVideoRef = useRef(null);
   const streamRef = useRef(null);
-  const iceQueueRef = useRef({});
 
   const [participants, setParticipants] = useState([]);
 
   useEffect(() => {
 
-    const start = async () => {
+    const startMeeting = async () => {
 
       const stream = await navigator.mediaDevices.getUserMedia({
         video: true,
@@ -62,26 +61,35 @@ export default function MeetingRoom({ meetingId, user }) {
           case "existing-users":
 
             data.users.forEach(u => {
+
               if (u.user_id !== user.id) {
+
+                console.log("Creating offer to", u.user_id);
+
                 createPeerConnection(u.user_id, true);
+
               }
+
             });
 
           break;
 
+
           case "user-connected":
 
-            if (data.user_id !== user.id) {
-              createPeerConnection(data.user_id, false);
-            }
+            console.log("New user joined:", data.user_id);
+
+            // DO NOT create offer here (prevents collision)
 
           break;
+
 
           case "offer":
 
             await handleOffer(data.offer, data.caller_id);
 
           break;
+
 
           case "answer":
 
@@ -96,11 +104,20 @@ export default function MeetingRoom({ meetingId, user }) {
 
           break;
 
+
           case "ice-candidate":
 
-            handleICE(data.caller_id, data.candidate);
+            if (peersRef.current[data.caller_id]) {
+
+              await peersRef.current[data.caller_id]
+              .addIceCandidate(
+                new RTCIceCandidate(data.candidate)
+              );
+
+            }
 
           break;
+
 
           case "user-disconnected":
 
@@ -114,7 +131,7 @@ export default function MeetingRoom({ meetingId, user }) {
 
     };
 
-    start();
+    startMeeting();
 
     return () => {
 
@@ -142,6 +159,8 @@ export default function MeetingRoom({ meetingId, user }) {
     });
 
     peer.ontrack = (event) => {
+
+      console.log("Received remote stream from", remoteId);
 
       addParticipant(remoteId, event.streams[0]);
 
@@ -185,7 +204,9 @@ export default function MeetingRoom({ meetingId, user }) {
   const handleOffer = async (offer, callerId) => {
 
     if (!peersRef.current[callerId]) {
+
       await createPeerConnection(callerId, false);
+
     }
 
     const peer = peersRef.current[callerId];
@@ -204,37 +225,6 @@ export default function MeetingRoom({ meetingId, user }) {
       caller_id: user.id,
       target_id: callerId
     }));
-
-  };
-
-
-
-
-  const handleICE = async (id, candidate) => {
-
-    const peer = peersRef.current[id];
-
-    if (peer) {
-
-      try {
-
-        await peer.addIceCandidate(
-          new RTCIceCandidate(candidate)
-        );
-
-      } catch (err) {
-        console.error("ICE error", err);
-      }
-
-    } else {
-
-      if (!iceQueueRef.current[id]) {
-        iceQueueRef.current[id] = [];
-      }
-
-      iceQueueRef.current[id].push(candidate);
-
-    }
 
   };
 
@@ -269,6 +259,7 @@ export default function MeetingRoom({ meetingId, user }) {
     if (peersRef.current[id]) {
 
       peersRef.current[id].close();
+
       delete peersRef.current[id];
 
     }
@@ -296,7 +287,7 @@ export default function MeetingRoom({ meetingId, user }) {
         width="300"
       />
 
-      <div style={{ display: "flex", flexWrap: "wrap" }}>
+      <div style={{display:"flex",flexWrap:"wrap"}}>
 
         {participants.map(p => (
 
@@ -308,7 +299,9 @@ export default function MeetingRoom({ meetingId, user }) {
             ref={video => {
 
               if (video && video.srcObject !== p.stream) {
+
                 video.srcObject = p.stream;
+
               }
 
             }}
