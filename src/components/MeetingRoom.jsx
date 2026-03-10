@@ -1,6 +1,6 @@
-import React, {useEffect,useRef,useState} from "react";
+import React,{useEffect,useRef,useState} from "react";
 
-const rtcConfig = {
+const rtcConfig={
 iceServers:[
 {urls:"stun:stun.l.google.com:19302"},
 {
@@ -32,9 +32,11 @@ audio:true
 });
 
 streamRef.current=stream;
+
 localVideoRef.current.srcObject=stream;
 
 const ws=new WebSocket(`${protocol}://${window.location.host}/ws/meeting/${meetingId}/`);
+
 wsRef.current=ws;
 
 ws.onopen=()=>{
@@ -51,13 +53,15 @@ ws.onmessage=async(event)=>{
 
 const data=JSON.parse(event.data);
 
+console.log("WS EVENT",data);
+
 switch(data.type){
 
 case "existing-users":
 
 data.users.forEach(u=>{
 if(u.user_id!==user.id){
-createPeer(u.user_id,true);
+createPeerConnection(u.user_id,true);
 }
 });
 
@@ -67,7 +71,7 @@ break;
 case "user-connected":
 
 if(data.user_id!==user.id){
-createPeer(data.user_id,true);
+createPeerConnection(data.user_id,true);
 }
 
 break;
@@ -75,7 +79,7 @@ break;
 
 case "offer":
 
-await receiveOffer(data.offer,data.caller_id);
+await handleOffer(data.offer,data.caller_id);
 
 break;
 
@@ -112,18 +116,19 @@ start();
 
 return()=>{
 
-Object.values(peersRef.current).forEach(p=>p.close());
+Object.values(peersRef.current).forEach(peer=>peer.close());
 
-if(wsRef.current)wsRef.current.close();
+if(wsRef.current) wsRef.current.close();
 
 };
 
 },[]);
 
 
-const createPeer=async(remoteId,initiator=false)=>{
 
-if(peersRef.current[remoteId])return;
+const createPeerConnection=async(remoteId,initiator=false)=>{
+
+if(peersRef.current[remoteId]) return;
 
 const peer=new RTCPeerConnection(rtcConfig);
 
@@ -138,14 +143,18 @@ addParticipant(remoteId,event.streams[0]);
 };
 
 peer.onicecandidate=(event)=>{
+
 if(event.candidate){
+
 wsRef.current.send(JSON.stringify({
 type:"ice-candidate",
 candidate:event.candidate,
 caller_id:user.id,
 target_id:remoteId
 }));
+
 }
+
 };
 
 if(initiator){
@@ -166,7 +175,8 @@ target_id:remoteId
 };
 
 
-const receiveOffer=async(offer,callerId)=>{
+
+const handleOffer=async(offer,callerId)=>{
 
 const peer=new RTCPeerConnection(rtcConfig);
 
@@ -181,14 +191,18 @@ addParticipant(callerId,event.streams[0]);
 };
 
 peer.onicecandidate=(event)=>{
+
 if(event.candidate){
+
 wsRef.current.send(JSON.stringify({
 type:"ice-candidate",
 candidate:event.candidate,
 caller_id:user.id,
 target_id:callerId
 }));
+
 }
+
 };
 
 await peer.setRemoteDescription(new RTCSessionDescription(offer));
@@ -205,6 +219,7 @@ target_id:callerId
 }));
 
 };
+
 
 
 const addParticipant=(id,stream)=>{
@@ -224,11 +239,15 @@ return [...prev,{id,stream}];
 };
 
 
+
 const removePeer=(id)=>{
 
 if(peersRef.current[id]){
+
 peersRef.current[id].close();
+
 delete peersRef.current[id];
+
 }
 
 setParticipants(prev=>prev.filter(p=>p.id!==id));
@@ -236,15 +255,22 @@ setParticipants(prev=>prev.filter(p=>p.id!==id));
 };
 
 
+
 return(
 
 <div>
 
-<h2>Meeting {meetingId}</h2>
+<h2>Meeting Room {meetingId}</h2>
 
-<video ref={localVideoRef} autoPlay muted playsInline width="300"/>
+<video
+ref={localVideoRef}
+autoPlay
+muted
+playsInline
+width="300"
+/>
 
-<div style={{display:"flex"}}>
+<div style={{display:"flex",flexWrap:"wrap"}}>
 
 {participants.map(p=>(
 
@@ -254,7 +280,7 @@ autoPlay
 playsInline
 width="300"
 ref={video=>{
-if(video&&video.srcObject!==p.stream){
+if(video && video.srcObject!==p.stream){
 video.srcObject=p.stream;
 }
 }}
