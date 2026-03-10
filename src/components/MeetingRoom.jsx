@@ -1,6 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import Peer from 'simple-peer';
 import {
     Mic, MicOff, Video, VideoOff,
     Hand, MonitorUp, Smile, MoreVertical,
@@ -21,8 +20,15 @@ const MeetingRoom = ({ meetingId, onLeave, initialStream, initialMic, initialVid
 
     const [stream, setStream] = useState(initialStream);
     const videoRef = useRef(null);
-    const peersRef = useRef([]); // Stores { peerId, peer, stream }
+    const peersRef = useRef({}); // Stores native RTCPeerConnections mapped by { userId: RTCPeerConnection }
     const wsRef = useRef(null);
+
+    const rtcConfig = {
+        iceServers: [
+            { urls: 'stun:stun.l.google.com:19302' },
+            { urls: 'stun:global.stun.twilio.com:3478' }
+        ]
+    };
 
     const [participants, setParticipants] = useState([
         { id: 'me', name: 'You', avatar: 'https://api.dicebear.com/7.x/avataaars/svg?seed=Felix', raisedHand: false }
@@ -73,23 +79,28 @@ const MeetingRoom = ({ meetingId, onLeave, initialStream, initialMic, initialVid
                                 setParticipants(prev => {
                                     const newParticipants = [...prev];
                                     existingUsers.forEach(u => {
+                                        const isString = typeof u === 'string';
+
                                         // Skip adding ourselves if returned by backend
-                                        if (u.user_id === user?.id || u.id === user?.id) return;
+                                        if (isString && u === user?.name) return;
+                                        if (!isString && (u.user_id === user?.id || u.id === user?.id || u.name === user?.name)) return;
 
                                         // Fallbacks for various API structures
-                                        const pId = u.user_id || u.id || u.pk || u.name;
+                                        const pId = isString ? u : (u.user_id || u.id || u.pk || u.name);
+                                        const pName = isString ? u : (u.name || `User ${pId}`);
                                         if (!pId) return;
 
-                                        if (!newParticipants.find(p => p.id === pId)) {
+                                        // Prevent loading duplicate users from backend responses into the UI/Peer Mesh
+                                        if (!newParticipants.find(p => p.id === pId || p.name === pName)) {
                                             newParticipants.push({
                                                 id: pId,
-                                                name: u.name || `User ${pId}`,
+                                                name: pName,
                                                 avatar: `https://api.dicebear.com/7.x/avataaars/svg?seed=${pId}`,
                                                 raisedHand: false
                                             });
 
                                             // 🚨 CRITICAL FIX: The current user MUST initiate WebRTC Offers to all pre-existing users to establish mesh!
-                                            createPeerAndOffer(pId, stream);
+                                            createPeerConnection(pId, true);
                                         }
                                     });
                                     return newParticipants;
@@ -111,26 +122,26 @@ const MeetingRoom = ({ meetingId, onLeave, initialStream, initialMic, initialVid
                 switch (message.type) {
                     case 'user-connected':
                         // Another user joined. We (as the existing user) should initiate an Offer
-                        createPeerAndOffer(message.user_id, stream);
+                        createPeerConnection(message.user_id, true);
                         break;
 
                     case 'offer':
                         // We received an offer from somebody else. We need to create a peer to Answer it.
-                        handleReceiveOffer(message.offer, message.caller_id, stream);
+                        await handleReceiveOffer(message.offer, message.caller_id);
                         break;
 
                     case 'answer':
                         // We received an answer to an offer we sent.
-                        const activePeer = peersRef.current.find(p => p.peerId === message.caller_id);
-                        if (activePeer && activePeer.peer) {
-                            activePeer.peer.signal(message.answer);
+                        const activePeer = peersRef.current[message.caller_id];
+                        if (activePeer) {
+                            await activePeer.setRemoteDescription(new RTCSessionDescription(message.answer));
                         }
                         break;
 
                     case 'ice-candidate':
-                        const icPeer = peersRef.current.find(p => p.peerId === message.caller_id);
-                        if (icPeer && icPeer.peer) {
-                            icPeer.peer.signal(message.candidate);
+                        const icPeer = peersRef.current[message.caller_id];
+                        if (icPeer && message.candidate) {
+                            await icPeer.addIceCandidate(new RTCIceCandidate(message.candidate));
                         }
                         break;
 
@@ -154,79 +165,141 @@ const MeetingRoom = ({ meetingId, onLeave, initialStream, initialMic, initialVid
         // Cleanup on unmount
         return () => {
             if (wsRef.current) wsRef.current.close();
-            peersRef.current.forEach(p => p.peer.destroy());
-            peersRef.current = [];
+            Object.values(peersRef.current).forEach(peer => peer.close());
+            peersRef.current = {};
         };
-    }, [meetingId, stream]); // Depend on stream so we can pass it to SimplePeer
+    }, [meetingId, stream]); // Depend on stream so we can pass it to RTCPeerConnection
 
-    // --- WebRTC Peer Logic ---
-    const createPeerAndOffer = (remoteUserId, myStream) => {
-        const peer = new Peer({
-            initiator: true,
-            trickle: true,
-            stream: myStream
-        });
+    // --- WebRTC Native Peer Logic ---
 
-        // Whenever SimplePeer generates an ICE candidate or Offer, send it to the Django server to route to the other user
-        peer.on('signal', signal => {
-            if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-                if (signal.type === 'offer') {
-                    wsRef.current.send(JSON.stringify({ type: 'offer', offer: signal, target_id: remoteUserId, caller_id: user?.id || 1 }));
-                } else {
-                    wsRef.current.send(JSON.stringify({ type: 'ice-candidate', candidate: signal, target_id: remoteUserId, caller_id: user?.id || 1 }));
-                }
+    // Generalized function to setup an RTCPeerConnection for a specific remote user
+    const setupPeerConnection = (remoteUserId) => {
+        console.log(`[WebRTC] Setting up RTCPeerConnection for user: ${remoteUserId}`);
+        const peer = new RTCPeerConnection(rtcConfig);
+
+        // Add local tracks to the connection
+        if (stream) {
+            console.log(`[WebRTC] Adding local stream tracks for user: ${remoteUserId}`);
+            stream.getTracks().forEach(track => {
+                peer.addTrack(track, stream);
+            });
+        }
+
+        // Handle incoming ICE candidates generated by the local browser
+        peer.onicecandidate = (event) => {
+            if (event.candidate && wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+                console.log(`[WebRTC] Generated ICE candidate for ${remoteUserId}, sending...`);
+                wsRef.current.send(JSON.stringify({
+                    type: 'ice-candidate',
+                    candidate: event.candidate,
+                    target_id: remoteUserId,
+                    caller_id: user?.id || 1
+                }));
             }
-        });
+        };
 
-        peer.on('stream', remoteStream => {
+        peer.onconnectionstatechange = () => {
+            console.log(`[WebRTC] Connection state with ${remoteUserId}: ${peer.connectionState}`);
+        };
+
+        peer.oniceconnectionstatechange = () => {
+            console.log(`[WebRTC] ICE Connection state with ${remoteUserId}: ${peer.iceConnectionState}`);
+        };
+
+        // Handle incoming remote media streams resolving (the final video feed)
+        peer.ontrack = (event) => {
+            console.log(`[WebRTC] Received remote track from ${remoteUserId}!`, event.streams[0]);
+            const remoteStream = event.streams[0];
             addParticipantVideo(remoteUserId, remoteStream);
-        });
+        };
 
-        peersRef.current.push({ peerId: remoteUserId, peer });
+        peersRef.current[remoteUserId] = peer;
+        return peer;
     };
 
-    const handleReceiveOffer = (incomingOffer, callerId, myStream) => {
-        const peer = new Peer({
-            initiator: false,
-            trickle: true,
-            stream: myStream
-        });
 
-        peer.on('signal', signal => {
-            if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-                if (signal.type === 'answer') {
-                    wsRef.current.send(JSON.stringify({ type: 'answer', answer: signal, target_id: callerId, caller_id: user?.id || 1 }));
-                } else {
-                    wsRef.current.send(JSON.stringify({ type: 'ice-candidate', candidate: signal, target_id: callerId, caller_id: user?.id || 1 }));
+    const createPeerConnection = async (remoteUserId, initiator) => {
+        const peer = setupPeerConnection(remoteUserId);
+
+        if (initiator) {
+            try {
+                console.log(`[WebRTC] Creating Offer for ${remoteUserId}...`);
+                const offer = await peer.createOffer();
+                await peer.setLocalDescription(offer);
+                console.log(`[WebRTC] Offer created and set as local description for ${remoteUserId}.`);
+
+                if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+                    wsRef.current.send(JSON.stringify({
+                        type: 'offer',
+                        offer: peer.localDescription,
+                        target_id: remoteUserId,
+                        caller_id: user?.id || 1
+                    }));
                 }
+            } catch (err) {
+                console.error("[WebRTC] Error generating offer", err);
             }
-        });
-
-        peer.on('stream', remoteStream => {
-            addParticipantVideo(callerId, remoteStream);
-        });
-
-        peer.signal(incomingOffer);
-        peersRef.current.push({ peerId: callerId, peer });
+        }
     };
 
-    const addParticipantVideo = (userId, stream) => {
+    const handleReceiveOffer = async (incomingOffer, callerId) => {
+        const peer = setupPeerConnection(callerId);
+
+        try {
+            console.log(`[WebRTC] Received Offer from ${callerId}. Setting remote description...`);
+            await peer.setRemoteDescription(new RTCSessionDescription(incomingOffer));
+
+            console.log(`[WebRTC] Creating Answer for ${callerId}...`);
+            const answer = await peer.createAnswer();
+            await peer.setLocalDescription(answer);
+            console.log(`[WebRTC] Answer created and set as local description for ${callerId}.`);
+
+            if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+                wsRef.current.send(JSON.stringify({
+                    type: 'answer',
+                    answer: peer.localDescription,
+                    target_id: callerId,
+                    caller_id: user?.id || 1
+                }));
+            }
+        } catch (err) {
+            console.error("[WebRTC] Error handling offer/generating answer", err);
+        }
+    };
+
+    const addParticipantVideo = (userId, incomingStream) => {
+        console.log(`[UI] Adding/Updating video tile for user: ${userId}. Has stream:`, !!incomingStream);
+        if (incomingStream) {
+            console.log(`[UI] Stream Tracks for ${userId}:`, incomingStream.getTracks().map(t => `${t.kind} (${t.readyState})`));
+        }
+
         setParticipants(prev => {
-            if (prev.find(p => p.id === userId)) return prev;
+            const existingIdx = prev.findIndex(p => p.id === userId);
+
+            if (existingIdx >= 0) {
+                // User tile already exists (maybe from the initial fetch list). Update it to attach the stream!
+                console.log(`[UI] Updating existing user tile ${userId} with video stream.`);
+                const updated = [...prev];
+                updated[existingIdx] = { ...updated[existingIdx], stream: incomingStream };
+                return updated;
+            }
+
+            // User tile didn't exist yet, create it fresh.
+            console.log(`[UI] Creating new DOM tile for user ${userId}.`);
             return [...prev, {
                 id: userId,
                 name: `User ${userId}`,
                 avatar: `https://api.dicebear.com/7.x/avataaars/svg?seed=${userId}`,
-                stream: stream,
+                stream: incomingStream,
                 raisedHand: false
             }];
         });
     };
 
     const removePeer = (userId) => {
-        const peerObj = peersRef.current.find(p => p.peerId === userId);
-        if (peerObj) peerObj.peer.destroy();
-        peersRef.current = peersRef.current.filter(p => p.peerId !== userId);
+        const peerObj = peersRef.current[userId];
+        if (peerObj) peerObj.close();
+        delete peersRef.current[userId];
         setParticipants(prev => prev.filter(p => p.id !== userId));
     };
 
