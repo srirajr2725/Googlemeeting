@@ -35,7 +35,10 @@ streamRef.current=stream;
 
 localVideoRef.current.srcObject=stream;
 
-const ws=new WebSocket(`${protocol}://${window.location.host}/ws/meeting/${meetingId}/`);
+// const ws=new WebSocket(`${protocol}://${window.location.host}/ws/meeting/${meetingId}/`);
+const ws = new WebSocket(
+`wss://snappier-reapply-kieth.ngrok-free.dev/ws/meeting/${meetingId}/`
+);
 
 wsRef.current=ws;
 
