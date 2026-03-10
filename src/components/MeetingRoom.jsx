@@ -625,4 +625,4 @@ export default function MeetingRoom({ meetingId, user, onLeave, initialStream, i
             </footer>
         </div>
     );
-}
+ }
