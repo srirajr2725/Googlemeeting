@@ -2,6 +2,64 @@ import React, { useEffect, useRef, useState } from "react";
 import { Mic, MicOff, Video as VideoIcon, VideoOff, Phone, MonitorUp, MonitorX, MoreVertical, MessageSquare, Users, Info, Captions, Hand, Send, X } from "lucide-react";
 import './MeetingRoom.css';
 
+// Dedicated component — attaches srcObject on mount and whenever
+// new tracks are added, with a polling fallback for edge cases.
+function RemoteVideo({ stream, participantId }) {
+    const videoRef = useRef(null);
+
+    // Always (re-)attach as soon as both stream and DOM node exist
+    const attachStream = (video, s) => {
+        if (!video || !s) return;
+        if (video.srcObject !== s) {
+            video.srcObject = s;
+        }
+        // If paused or not playing, try to play
+        if (video.paused) video.play().catch(() => { });
+    };
+
+    // Ref callback: fires whenever the DOM node mounts/changes
+    const setVideoRef = (video) => {
+        videoRef.current = video;
+        attachStream(video, stream);
+    };
+
+    useEffect(() => {
+        const video = videoRef.current;
+        if (!video || !stream) return;
+
+        attachStream(video, stream);
+
+        // Listen for future tracks added to the same stream object
+        const onAddTrack = () => attachStream(video, stream);
+        stream.addEventListener('addtrack', onAddTrack);
+
+        // Polling fallback: every 500 ms recheck, in case addtrack
+        // fired before this component mounted its listener.
+        const poll = setInterval(() => attachStream(video, stream), 500);
+        // Stop polling once video is actually playing
+        const onPlaying = () => clearInterval(poll);
+        video.addEventListener('playing', onPlaying);
+
+        return () => {
+            stream.removeEventListener('addtrack', onAddTrack);
+            video.removeEventListener('playing', onPlaying);
+            clearInterval(poll);
+        };
+    }, [stream]);
+
+    return (
+        <div className="meet-tile">
+            <video
+                ref={setVideoRef}
+                className="meet-video"
+                autoPlay
+                playsInline
+            />
+            <div className="meet-label">Participant {participantId}</div>
+        </div>
+    );
+}
+
 const rtcConfig = {
     iceServers: [
         { urls: "stun:stun.l.google.com:19302" },
@@ -13,6 +71,7 @@ export default function MeetingRoom({ meetingId, user, onLeave }) {
 
     const wsRef = useRef(null);
     const peersRef = useRef({});
+    const remoteStreamsRef = useRef({});   // one MediaStream per remote peer
     const candidateQueue = useRef({});
     const localStreamRef = useRef(null);
     const localVideoRef = useRef(null);
@@ -255,31 +314,32 @@ export default function MeetingRoom({ meetingId, user, onLeave }) {
         const peer = new RTCPeerConnection(rtcConfig);
         peersRef.current[remoteId] = peer;
 
+        // Pre-create the stream so the component always has
+        // a stable reference even before tracks arrive
+        const remoteStream = new MediaStream();
+        remoteStreamsRef.current[remoteId] = remoteStream;
+
+        // Add participant immediately (stream has no tracks yet)
+        setParticipants(prev => [
+            ...prev.filter(p => p.id !== remoteId),
+            { id: remoteId, stream: remoteStream }
+        ]);
+
         localStreamRef.current.getTracks().forEach(track => {
             peer.addTrack(track, localStreamRef.current);
         });
 
         peer.ontrack = (event) => {
 
-            const remoteStream = event.streams[0];
+            // Add incoming track to the pre-created stream
+            if (!remoteStream.getTracks().find(t => t.id === event.track.id)) {
+                remoteStream.addTrack(event.track);
+            }
 
-            if (!remoteStream) return;
-
-            setParticipants(prev => {
-
-                const exists = prev.find(p => p.id === remoteId);
-
-                if (exists) {
-
-                    return prev.map(p =>
-                        p.id === remoteId ? { ...p, stream: remoteStream } : p
-                    );
-
-                }
-
-                return [...prev, { id: remoteId, stream: remoteStream }];
-
-            });
+            // Force a state update so RemoteVideo re-checks srcObject
+            setParticipants(prev => prev.map(p =>
+                p.id === remoteId ? { ...p, stream: remoteStream } : p
+            ));
 
         };
 
@@ -328,31 +388,32 @@ export default function MeetingRoom({ meetingId, user, onLeave }) {
             peer = new RTCPeerConnection(rtcConfig);
             peersRef.current[callerId] = peer;
 
+            // Pre-create the stream so the component always has
+            // a stable reference even before tracks arrive
+            const remoteStream = new MediaStream();
+            remoteStreamsRef.current[callerId] = remoteStream;
+
+            // Add participant immediately (stream has no tracks yet)
+            setParticipants(prev => [
+                ...prev.filter(p => p.id !== callerId),
+                { id: callerId, stream: remoteStream }
+            ]);
+
             localStreamRef.current.getTracks().forEach(track => {
                 peer.addTrack(track, localStreamRef.current);
             });
 
             peer.ontrack = (event) => {
 
-                const remoteStream = event.streams[0];
+                // Add incoming track to the pre-created stream
+                if (!remoteStream.getTracks().find(t => t.id === event.track.id)) {
+                    remoteStream.addTrack(event.track);
+                }
 
-                if (!remoteStream) return;
-
-                setParticipants(prev => {
-
-                    const exists = prev.find(p => p.id === callerId);
-
-                    if (exists) {
-
-                        return prev.map(p =>
-                            p.id === callerId ? { ...p, stream: remoteStream } : p
-                        );
-
-                    }
-
-                    return [...prev, { id: callerId, stream: remoteStream }];
-
-                });
+                // Force a state update so RemoteVideo re-checks srcObject
+                setParticipants(prev => prev.map(p =>
+                    p.id === callerId ? { ...p, stream: remoteStream } : p
+                ));
 
             };
 
@@ -452,6 +513,7 @@ export default function MeetingRoom({ meetingId, user, onLeave }) {
 
         peersRef.current[id].close();
         delete peersRef.current[id];
+        delete remoteStreamsRef.current[id];   // clean up stream too
 
         setParticipants(prev => prev.filter(p => p.id !== id));
 
@@ -499,21 +561,7 @@ export default function MeetingRoom({ meetingId, user, onLeave }) {
                     </div>
 
                     {participants.map(p => (
-                        <div className="meet-tile" key={p.id}>
-                            <video
-                                className="meet-video"
-                                autoPlay
-                                playsInline
-                                ref={(video) => {
-                                    if (video && video.srcObject !== p.stream) {
-                                        video.srcObject = p.stream;
-                                    }
-                                }}
-                            />
-                            <div className="meet-label">
-                                Participant {p.id}
-                            </div>
-                        </div>
+                        <RemoteVideo key={p.id} stream={p.stream} participantId={p.id} />
                     ))}
 
                 </div>
@@ -538,7 +586,7 @@ export default function MeetingRoom({ meetingId, user, onLeave }) {
                                     <div className="meet-avatar" style={{ background: '#34a853' }}>
                                         P
                                     </div>
-                                    <span>Participant {p.id.substring(0, 6)}</span>
+                                    <span>Participant {String(p.id).substring(0, 6)}</span>
                                 </li>
                             ))}
                         </ul>
