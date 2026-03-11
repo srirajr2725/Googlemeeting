@@ -2,44 +2,6 @@ import React, { useEffect, useRef, useState } from "react";
 import { Mic, MicOff, Video as VideoIcon, VideoOff, Phone, MonitorUp, MonitorX, MoreVertical, MessageSquare, Users, Info, Captions, Hand, Send, X } from "lucide-react";
 import './MeetingRoom.css';
 
-// Dedicated component — attaches srcObject once on mount and again
-// whenever the stream gains new tracks (addtrack event).
-function RemoteVideo({ stream, participantId }) {
-    const videoRef = useRef(null);
-
-    useEffect(() => {
-        const video = videoRef.current;
-        if (!video || !stream) return;
-
-        // Attach stream immediately
-        video.srcObject = stream;
-
-        // Re-attach on every new incoming track so the video element
-        // picks up tracks that arrive after the component first mounts.
-        const onAddTrack = () => {
-            video.srcObject = null;
-            video.srcObject = stream;
-        };
-        stream.addEventListener('addtrack', onAddTrack);
-
-        return () => {
-            stream.removeEventListener('addtrack', onAddTrack);
-        };
-    }, [stream]);
-
-    return (
-        <div className="meet-tile">
-            <video
-                ref={videoRef}
-                className="meet-video"
-                autoPlay
-                playsInline
-            />
-            <div className="meet-label">Participant {participantId}</div>
-        </div>
-    );
-}
-
 const rtcConfig = {
     iceServers: [
         { urls: "stun:stun.l.google.com:19302" },
@@ -51,7 +13,6 @@ export default function MeetingRoom({ meetingId, user, onLeave }) {
 
     const wsRef = useRef(null);
     const peersRef = useRef({});
-    const remoteStreamsRef = useRef({});   // one MediaStream per remote peer
     const candidateQueue = useRef({});
     const localStreamRef = useRef(null);
     const localVideoRef = useRef(null);
@@ -300,25 +261,20 @@ export default function MeetingRoom({ meetingId, user, onLeave }) {
 
         peer.ontrack = (event) => {
 
-            // Get-or-create a single MediaStream for this peer
-            if (!remoteStreamsRef.current[remoteId]) {
-                remoteStreamsRef.current[remoteId] = new MediaStream();
-            }
-            const remoteStream = remoteStreamsRef.current[remoteId];
+            const remoteStream = event.streams[0];
 
-            // Add the track only if not already present
-            if (!remoteStream.getTracks().find(t => t.id === event.track.id)) {
-                remoteStream.addTrack(event.track);
-            }
+            if (!remoteStream) return;
 
             setParticipants(prev => {
 
                 const exists = prev.find(p => p.id === remoteId);
 
                 if (exists) {
+
                     return prev.map(p =>
                         p.id === remoteId ? { ...p, stream: remoteStream } : p
                     );
+
                 }
 
                 return [...prev, { id: remoteId, stream: remoteStream }];
@@ -378,25 +334,20 @@ export default function MeetingRoom({ meetingId, user, onLeave }) {
 
             peer.ontrack = (event) => {
 
-                // Get-or-create a single MediaStream for this peer
-                if (!remoteStreamsRef.current[callerId]) {
-                    remoteStreamsRef.current[callerId] = new MediaStream();
-                }
-                const remoteStream = remoteStreamsRef.current[callerId];
+                const remoteStream = event.streams[0];
 
-                // Add the track only if not already present
-                if (!remoteStream.getTracks().find(t => t.id === event.track.id)) {
-                    remoteStream.addTrack(event.track);
-                }
+                if (!remoteStream) return;
 
                 setParticipants(prev => {
 
                     const exists = prev.find(p => p.id === callerId);
 
                     if (exists) {
+
                         return prev.map(p =>
                             p.id === callerId ? { ...p, stream: remoteStream } : p
                         );
+
                     }
 
                     return [...prev, { id: callerId, stream: remoteStream }];
@@ -501,7 +452,6 @@ export default function MeetingRoom({ meetingId, user, onLeave }) {
 
         peersRef.current[id].close();
         delete peersRef.current[id];
-        delete remoteStreamsRef.current[id];   // clean up stream too
 
         setParticipants(prev => prev.filter(p => p.id !== id));
 
@@ -549,7 +499,21 @@ export default function MeetingRoom({ meetingId, user, onLeave }) {
                     </div>
 
                     {participants.map(p => (
-                        <RemoteVideo key={p.id} stream={p.stream} participantId={p.id} />
+                        <div className="meet-tile" key={p.id}>
+                            <video
+                                className="meet-video"
+                                autoPlay
+                                playsInline
+                                ref={(video) => {
+                                    if (video && video.srcObject !== p.stream) {
+                                        video.srcObject = p.stream;
+                                    }
+                                }}
+                            />
+                            <div className="meet-label">
+                                Participant {p.id}
+                            </div>
+                        </div>
                     ))}
 
                 </div>
@@ -574,7 +538,7 @@ export default function MeetingRoom({ meetingId, user, onLeave }) {
                                     <div className="meet-avatar" style={{ background: '#34a853' }}>
                                         P
                                     </div>
-                                    <span>Participant {String(p.id).substring(0, 6)}</span>
+                                    <span>Participant {p.id.substring(0, 6)}</span>
                                 </li>
                             ))}
                         </ul>
