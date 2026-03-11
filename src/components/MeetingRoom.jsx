@@ -2,55 +2,35 @@ import React, { useEffect, useRef, useState } from "react";
 import { Mic, MicOff, Video as VideoIcon, VideoOff, Phone, MonitorUp, MonitorX, MoreVertical, MessageSquare, Users, Info, Captions, Hand, Send, X } from "lucide-react";
 import './MeetingRoom.css';
 
-// Dedicated component — attaches srcObject on mount and whenever
-// new tracks are added, with a polling fallback for edge cases.
+// Dedicated component — attaches srcObject once on mount and again
+// whenever the stream gains new tracks (addtrack event).
 function RemoteVideo({ stream, participantId }) {
     const videoRef = useRef(null);
-
-    // Always (re-)attach as soon as both stream and DOM node exist
-    const attachStream = (video, s) => {
-        if (!video || !s) return;
-        if (video.srcObject !== s) {
-            video.srcObject = s;
-        }
-        // If paused or not playing, try to play
-        if (video.paused) video.play().catch(() => { });
-    };
-
-    // Ref callback: fires whenever the DOM node mounts/changes
-    const setVideoRef = (video) => {
-        videoRef.current = video;
-        attachStream(video, stream);
-    };
 
     useEffect(() => {
         const video = videoRef.current;
         if (!video || !stream) return;
 
-        attachStream(video, stream);
+        // Attach stream immediately
+        video.srcObject = stream;
 
-        // Listen for future tracks added to the same stream object
-        const onAddTrack = () => attachStream(video, stream);
+        // Re-attach on every new incoming track so the video element
+        // picks up tracks that arrive after the component first mounts.
+        const onAddTrack = () => {
+            video.srcObject = null;
+            video.srcObject = stream;
+        };
         stream.addEventListener('addtrack', onAddTrack);
-
-        // Polling fallback: every 500 ms recheck, in case addtrack
-        // fired before this component mounted its listener.
-        const poll = setInterval(() => attachStream(video, stream), 500);
-        // Stop polling once video is actually playing
-        const onPlaying = () => clearInterval(poll);
-        video.addEventListener('playing', onPlaying);
 
         return () => {
             stream.removeEventListener('addtrack', onAddTrack);
-            video.removeEventListener('playing', onPlaying);
-            clearInterval(poll);
         };
     }, [stream]);
 
     return (
         <div className="meet-tile">
             <video
-                ref={setVideoRef}
+                ref={videoRef}
                 className="meet-video"
                 autoPlay
                 playsInline
@@ -314,32 +294,36 @@ export default function MeetingRoom({ meetingId, user, onLeave }) {
         const peer = new RTCPeerConnection(rtcConfig);
         peersRef.current[remoteId] = peer;
 
-        // Pre-create the stream so the component always has
-        // a stable reference even before tracks arrive
-        const remoteStream = new MediaStream();
-        remoteStreamsRef.current[remoteId] = remoteStream;
-
-        // Add participant immediately (stream has no tracks yet)
-        setParticipants(prev => [
-            ...prev.filter(p => p.id !== remoteId),
-            { id: remoteId, stream: remoteStream }
-        ]);
-
         localStreamRef.current.getTracks().forEach(track => {
             peer.addTrack(track, localStreamRef.current);
         });
 
         peer.ontrack = (event) => {
 
-            // Add incoming track to the pre-created stream
+            // Get-or-create a single MediaStream for this peer
+            if (!remoteStreamsRef.current[remoteId]) {
+                remoteStreamsRef.current[remoteId] = new MediaStream();
+            }
+            const remoteStream = remoteStreamsRef.current[remoteId];
+
+            // Add the track only if not already present
             if (!remoteStream.getTracks().find(t => t.id === event.track.id)) {
                 remoteStream.addTrack(event.track);
             }
 
-            // Force a state update so RemoteVideo re-checks srcObject
-            setParticipants(prev => prev.map(p =>
-                p.id === remoteId ? { ...p, stream: remoteStream } : p
-            ));
+            setParticipants(prev => {
+
+                const exists = prev.find(p => p.id === remoteId);
+
+                if (exists) {
+                    return prev.map(p =>
+                        p.id === remoteId ? { ...p, stream: remoteStream } : p
+                    );
+                }
+
+                return [...prev, { id: remoteId, stream: remoteStream }];
+
+            });
 
         };
 
@@ -388,32 +372,36 @@ export default function MeetingRoom({ meetingId, user, onLeave }) {
             peer = new RTCPeerConnection(rtcConfig);
             peersRef.current[callerId] = peer;
 
-            // Pre-create the stream so the component always has
-            // a stable reference even before tracks arrive
-            const remoteStream = new MediaStream();
-            remoteStreamsRef.current[callerId] = remoteStream;
-
-            // Add participant immediately (stream has no tracks yet)
-            setParticipants(prev => [
-                ...prev.filter(p => p.id !== callerId),
-                { id: callerId, stream: remoteStream }
-            ]);
-
             localStreamRef.current.getTracks().forEach(track => {
                 peer.addTrack(track, localStreamRef.current);
             });
 
             peer.ontrack = (event) => {
 
-                // Add incoming track to the pre-created stream
+                // Get-or-create a single MediaStream for this peer
+                if (!remoteStreamsRef.current[callerId]) {
+                    remoteStreamsRef.current[callerId] = new MediaStream();
+                }
+                const remoteStream = remoteStreamsRef.current[callerId];
+
+                // Add the track only if not already present
                 if (!remoteStream.getTracks().find(t => t.id === event.track.id)) {
                     remoteStream.addTrack(event.track);
                 }
 
-                // Force a state update so RemoteVideo re-checks srcObject
-                setParticipants(prev => prev.map(p =>
-                    p.id === callerId ? { ...p, stream: remoteStream } : p
-                ));
+                setParticipants(prev => {
+
+                    const exists = prev.find(p => p.id === callerId);
+
+                    if (exists) {
+                        return prev.map(p =>
+                            p.id === callerId ? { ...p, stream: remoteStream } : p
+                        );
+                    }
+
+                    return [...prev, { id: callerId, stream: remoteStream }];
+
+                });
 
             };
 
