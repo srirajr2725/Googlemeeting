@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from "react";
-import { Mic, MicOff, Video as VideoIcon, VideoOff, Phone, MonitorUp, MoreVertical, MessageSquare, Users, Info, Captions, Hand } from "lucide-react";
+import { Mic, MicOff, Video as VideoIcon, VideoOff, Phone, MonitorUp, MonitorX, MoreVertical, MessageSquare, Users, Info, Captions, Hand, Send, X } from "lucide-react";
 import './MeetingRoom.css';
 
 const rtcConfig = {
@@ -24,6 +24,24 @@ export default function MeetingRoom({ meetingId, user, onLeave }) {
     const [currentTime, setCurrentTime] = useState(
         new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
     );
+
+    // ── NEW FEATURE STATE ──────────────────────────────────────────
+    const [isScreenSharing, setIsScreenSharing] = useState(false);
+    const screenStreamRef = useRef(null);
+
+    const [isHandRaised, setIsHandRaised] = useState(false);
+
+    const [showParticipants, setShowParticipants] = useState(false);
+
+    const [showChat, setShowChat] = useState(false);
+    const [chatMessages, setChatMessages] = useState([]);
+    const [chatInput, setChatInput] = useState("");
+    const chatEndRef = useRef(null);
+
+    const [showEmojiPicker, setShowEmojiPicker] = useState(false);
+    const [reactions, setReactions] = useState([]);
+    const reactionId = useRef(0);
+    const EMOJIS = ["👍", "❤️", "😂", "😮", "👏", "🎉", "🔥", "😢"];
 
     const safeSend = (data) => {
 
@@ -84,6 +102,60 @@ export default function MeetingRoom({ meetingId, user, onLeave }) {
 
         }
 
+    };
+
+    // ── SCREEN SHARE ──────────────────────────────────────────────
+    const toggleScreenShare = async () => {
+        if (isScreenSharing) {
+            // Stop screen share – restore camera
+            if (screenStreamRef.current) {
+                screenStreamRef.current.getTracks().forEach(t => t.stop());
+                screenStreamRef.current = null;
+            }
+            if (localStreamRef.current && localVideoRef.current) {
+                localVideoRef.current.srcObject = localStreamRef.current;
+            }
+            setIsScreenSharing(false);
+        } else {
+            try {
+                const screenStream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: false });
+                screenStreamRef.current = screenStream;
+                if (localVideoRef.current) localVideoRef.current.srcObject = screenStream;
+                // Replace video track in all peers
+                const screenTrack = screenStream.getVideoTracks()[0];
+                Object.values(peersRef.current).forEach(peer => {
+                    const sender = peer.getSenders().find(s => s.track && s.track.kind === 'video');
+                    if (sender) sender.replaceTrack(screenTrack);
+                });
+                screenTrack.onended = () => toggleScreenShare();
+                setIsScreenSharing(true);
+            } catch (e) {
+                console.warn('Screen share cancelled or failed', e);
+            }
+        }
+    };
+
+    // ── HAND RAISE ────────────────────────────────────────────────
+    const toggleHand = () => setIsHandRaised(prev => !prev);
+
+    // ── CHAT ──────────────────────────────────────────────────────
+    const sendChat = () => {
+        const msg = chatInput.trim();
+        if (!msg) return;
+        setChatMessages(prev => [...prev, { id: Date.now(), sender: user.name || 'You', text: msg, own: true }]);
+        setChatInput("");
+    };
+
+    useEffect(() => {
+        if (chatEndRef.current) chatEndRef.current.scrollIntoView({ behavior: 'smooth' });
+    }, [chatMessages]);
+
+    // ── EMOJI REACTION ────────────────────────────────────────────
+    const sendReaction = (emoji) => {
+        const id = ++reactionId.current;
+        setReactions(prev => [...prev, { id, emoji, x: 20 + Math.random() * 60 }]);
+        setTimeout(() => setReactions(prev => prev.filter(r => r.id !== id)), 3000);
+        setShowEmojiPicker(false);
     };
 
     useEffect(() => {
@@ -387,24 +459,42 @@ export default function MeetingRoom({ meetingId, user, onLeave }) {
 
     return (
         <div className="meet-container">
-            <div className="meet-main">
+
+            {/* ── FLOATING EMOJI REACTIONS ───────────────────────────── */}
+            <div className="meet-reactions-stage">
+                {reactions.map(r => (
+                    <span
+                        key={r.id}
+                        className="meet-reaction-bubble"
+                        style={{ left: `${r.x}%` }}
+                    >
+                        {r.emoji}
+                    </span>
+                ))}
+            </div>
+
+            <div className="meet-main" style={{ position: 'relative' }}>
                 <div className="meet-grid">
 
+                    {/* Local tile */}
                     <div className="meet-tile">
                         <video
                             ref={localVideoRef}
-                            className="meet-video flipped"
+                            className={`meet-video${isScreenSharing ? '' : ' flipped'}`}
                             autoPlay
                             muted
                             playsInline
                         />
+                        {isHandRaised && (
+                            <div className="meet-hand-badge">✋</div>
+                        )}
                         <div className="meet-label">
                             {!isMicOn && (
                                 <div className="meet-mic-indicator muted">
                                     <MicOff size={14} color="white" />
                                 </div>
                             )}
-                            You
+                            You {isScreenSharing && <span className="meet-screen-badge">● Presenting</span>}
                         </div>
                     </div>
 
@@ -427,8 +517,68 @@ export default function MeetingRoom({ meetingId, user, onLeave }) {
                     ))}
 
                 </div>
+
+                {/* ── PARTICIPANTS PANEL ─────────────────────────────────── */}
+                {showParticipants && (
+                    <div className="meet-side-panel">
+                        <div className="meet-panel-header">
+                            <span>People ({participants.length + 1})</span>
+                            <button className="meet-panel-close" onClick={() => setShowParticipants(false)}><X size={18} /></button>
+                        </div>
+                        <ul className="meet-panel-list">
+                            <li className="meet-panel-item">
+                                <div className="meet-avatar" style={{ background: '#1a73e8' }}>
+                                    {(user.name || 'Y')[0].toUpperCase()}
+                                </div>
+                                <span>{user.name || 'You'} <em>(You)</em></span>
+                                {isHandRaised && <span className="meet-hand-icon">✋</span>}
+                            </li>
+                            {participants.map(p => (
+                                <li className="meet-panel-item" key={p.id}>
+                                    <div className="meet-avatar" style={{ background: '#34a853' }}>
+                                        P
+                                    </div>
+                                    <span>Participant {p.id.substring(0, 6)}</span>
+                                </li>
+                            ))}
+                        </ul>
+                    </div>
+                )}
+
+                {/* ── CHAT PANEL ─────────────────────────────────────────── */}
+                {showChat && (
+                    <div className="meet-side-panel">
+                        <div className="meet-panel-header">
+                            <span>In-call messages</span>
+                            <button className="meet-panel-close" onClick={() => setShowChat(false)}><X size={18} /></button>
+                        </div>
+                        <div className="meet-chat-messages">
+                            {chatMessages.length === 0 && (
+                                <p className="meet-chat-empty">No messages yet. Say hello! 👋</p>
+                            )}
+                            {chatMessages.map(m => (
+                                <div key={m.id} className={`meet-chat-msg ${m.own ? 'own' : ''}`}>
+                                    <span className="meet-chat-sender">{m.sender}</span>
+                                    <span className="meet-chat-text">{m.text}</span>
+                                </div>
+                            ))}
+                            <div ref={chatEndRef} />
+                        </div>
+                        <div className="meet-chat-input-row">
+                            <input
+                                className="meet-chat-input"
+                                placeholder="Send a message..."
+                                value={chatInput}
+                                onChange={e => setChatInput(e.target.value)}
+                                onKeyDown={e => e.key === 'Enter' && sendChat()}
+                            />
+                            <button className="meet-chat-send" onClick={sendChat}><Send size={16} /></button>
+                        </div>
+                    </div>
+                )}
             </div>
 
+            {/* ── BOTTOM BAR ─────────────────────────────────────────── */}
             <div className="meet-bottom-bar">
 
                 <div className="meet-bar-left">
@@ -437,27 +587,57 @@ export default function MeetingRoom({ meetingId, user, onLeave }) {
 
                 <div className="meet-bar-center">
 
-                    <button className={`meet-btn ${!isMicOn ? 'active-red' : ''}`} onClick={toggleMic}>
+                    <button className={`meet-btn ${!isMicOn ? 'active-red' : ''}`} onClick={toggleMic} title="Microphone">
                         {isMicOn ? <Mic size={20} /> : <MicOff size={20} />}
                     </button>
 
-                    <button className={`meet-btn ${!isVideoOn ? 'active-red' : ''}`} onClick={toggleVideo}>
+                    <button className={`meet-btn ${!isVideoOn ? 'active-red' : ''}`} onClick={toggleVideo} title="Camera">
                         {isVideoOn ? <VideoIcon size={20} /> : <VideoOff size={20} />}
                     </button>
 
-                    <button className="meet-btn">
-                        <Captions size={20} />
+                    {/* Screen Share */}
+                    <button
+                        className={`meet-btn ${isScreenSharing ? 'active-blue' : ''}`}
+                        onClick={toggleScreenShare}
+                        title={isScreenSharing ? 'Stop presenting' : 'Present now'}
+                    >
+                        {isScreenSharing ? <MonitorX size={20} /> : <MonitorUp size={20} />}
                     </button>
 
-                    <button className="meet-btn">
+                    {/* Hand raise */}
+                    <button
+                        className={`meet-btn ${isHandRaised ? 'active-yellow' : ''}`}
+                        onClick={toggleHand}
+                        title={isHandRaised ? 'Lower hand' : 'Raise hand'}
+                    >
                         <Hand size={20} />
                     </button>
 
-                    <button className="meet-btn">
-                        <MonitorUp size={20} />
+                    {/* Emoji reactions */}
+                    <div style={{ position: 'relative' }}>
+                        <button
+                            className="meet-btn"
+                            onClick={() => setShowEmojiPicker(prev => !prev)}
+                            title="Send a reaction"
+                        >
+                            <span style={{ fontSize: 18 }}>😊</span>
+                        </button>
+                        {showEmojiPicker && (
+                            <div className="meet-emoji-picker">
+                                {EMOJIS.map(e => (
+                                    <button key={e} className="meet-emoji-btn" onClick={() => sendReaction(e)}>
+                                        {e}
+                                    </button>
+                                ))}
+                            </div>
+                        )}
+                    </div>
+
+                    <button className="meet-btn" title="Captions">
+                        <Captions size={20} />
                     </button>
 
-                    <button className="meet-btn">
+                    <button className="meet-btn" title="More options">
                         <MoreVertical size={20} />
                     </button>
 
@@ -471,13 +651,21 @@ export default function MeetingRoom({ meetingId, user, onLeave }) {
                 </div>
 
                 <div className="meet-bar-right">
-                    <button className="meet-small-btn">
+                    <button className="meet-small-btn" title="Meeting info">
                         <Info size={20} />
                     </button>
-                    <button className="meet-small-btn">
+                    <button
+                        className={`meet-small-btn ${showParticipants ? 'active-panel' : ''}`}
+                        title="People"
+                        onClick={() => { setShowParticipants(p => !p); setShowChat(false); }}
+                    >
                         <Users size={20} />
                     </button>
-                    <button className="meet-small-btn">
+                    <button
+                        className={`meet-small-btn ${showChat ? 'active-panel' : ''}`}
+                        title="Chat"
+                        onClick={() => { setShowChat(p => !p); setShowParticipants(false); }}
+                    >
                         <MessageSquare size={20} />
                     </button>
                 </div>
