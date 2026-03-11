@@ -35,17 +35,8 @@ function RemoteVideo({ stream, participantId }) {
         const onAddTrack = () => attachStream(video, stream);
         stream.addEventListener('addtrack', onAddTrack);
 
-        // Polling fallback: every 500 ms recheck, in case addtrack
-        // fired before this component mounted its listener.
-        const poll = setInterval(() => attachStream(video, stream), 500);
-        // Stop polling once video is actually playing
-        const onPlaying = () => clearInterval(poll);
-        video.addEventListener('playing', onPlaying);
-
         return () => {
             stream.removeEventListener('addtrack', onAddTrack);
-            video.removeEventListener('playing', onPlaying);
-            clearInterval(poll);
         };
     }, [stream]);
 
