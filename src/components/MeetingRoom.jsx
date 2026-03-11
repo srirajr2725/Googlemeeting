@@ -1,137 +1,168 @@
-import React, { useEffect, useRef, useState, useCallback } from "react";
-import {
-    Mic, MicOff, Video as VideoIcon, VideoOff, Phone,
-    MonitorUp, MonitorX, MoreVertical, MessageSquare,
-    Users, Info, Captions, Hand, Send, X
-} from "lucide-react";
+import React, { useEffect, useRef, useState } from "react";
+import { Mic, MicOff, Video as VideoIcon, VideoOff, Phone, MonitorUp, MonitorX, MoreVertical, MessageSquare, Users, Info, Captions, Hand, Send, X } from "lucide-react";
+import './MeetingRoom.css';
 
-// ─── RemoteVideo ─────────────────────────────────────────────────────────────
-// Uses a callback ref so srcObject is (re-)set whenever the DOM node OR the
-// stream prop changes, eliminating the "black tile" race condition.
+// Dedicated component — attaches srcObject on mount and whenever
+// new tracks are added, with a polling fallback for edge cases.
 function RemoteVideo({ stream, participantId }) {
     const videoRef = useRef(null);
 
-    // Attach stream to video element
-    const attach = useCallback((video, s) => {
-        if (!video) return;
-        if (video.srcObject === s) return;
-        video.srcObject = s ?? null;
-        if (s) {
-            video.play().catch(() => {/* autoplay policy – user gesture needed */});
+    // Always (re-)attach as soon as both stream and DOM node exist
+    const attachStream = (video, s) => {
+        if (!video || !s) return;
+        if (video.srcObject !== s) {
+            video.srcObject = null; // force clear
+            video.srcObject = s;
         }
-    }, []);
+    };
 
-    // Callback ref: fires on mount AND unmount of the DOM node
-    const refCallback = useCallback((video) => {
+    // Ref callback: fires whenever the DOM node mounts/changes
+    const setVideoRef = (video) => {
         videoRef.current = video;
-        attach(video, stream);
-    }, [stream, attach]);
+        attachStream(video, stream);
+    };
 
-    // Also re-attach whenever the `stream` prop changes
     useEffect(() => {
-        attach(videoRef.current, stream);
-    }, [stream, attach]);
+        const video = videoRef.current;
+        if (!video || !stream) return;
+
+        attachStream(video, stream);
+
+        // Listen for future tracks added to the same stream object
+        const onAddTrack = () => attachStream(video, stream);
+        stream.addEventListener('addtrack', onAddTrack);
+
+        return () => {
+            stream.removeEventListener('addtrack', onAddTrack);
+        };
+    }, [stream]);
 
     return (
         <div className="meet-tile">
             <video
-                ref={refCallback}
+                ref={setVideoRef}
                 className="meet-video"
                 autoPlay
                 playsInline
             />
-            <div className="meet-label">Participant {String(participantId).substring(0, 6)}</div>
+            <div className="meet-label">Participant {participantId}</div>
         </div>
     );
 }
 
-// ─── RTC config ──────────────────────────────────────────────────────────────
 const rtcConfig = {
     iceServers: [
         { urls: "stun:stun.l.google.com:19302" },
-        { urls: "stun:stun1.l.google.com:19302" },
-    ],
+        { urls: "stun:stun1.l.google.com:19302" }
+    ]
 };
 
-// ─── MeetingRoom ─────────────────────────────────────────────────────────────
 export default function MeetingRoom({ meetingId, user, onLeave }) {
-    const wsRef             = useRef(null);
-    const peersRef          = useRef({});           // peerId → RTCPeerConnection
-    const remoteStreamsRef  = useRef({});            // peerId → MediaStream (stable ref)
-    const candidateQueue    = useRef({});            // peerId → RTCIceCandidateInit[]
-    const localStreamRef    = useRef(null);
-    const localVideoRef     = useRef(null);
 
-    const [participants, setParticipants] = useState([]);   // [{id, stream}]
+    const wsRef = useRef(null);
+    const peersRef = useRef({});
+    const remoteStreamsRef = useRef({}); // Stores all remote MediaStreams directly
+    const candidateQueue = useRef({});
+    const localStreamRef = useRef(null);
+    const localVideoRef = useRef(null);
 
-    const [isMicOn,   setIsMicOn]   = useState(true);
+    const [participants, setParticipants] = useState([]);
+
+    const [isMicOn, setIsMicOn] = useState(true);
     const [isVideoOn, setIsVideoOn] = useState(true);
     const [currentTime, setCurrentTime] = useState(
-        new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
+        new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
     );
 
-    // New-feature state
+    // ── NEW FEATURE STATE ──────────────────────────────────────────
     const [isScreenSharing, setIsScreenSharing] = useState(false);
     const screenStreamRef = useRef(null);
 
     const [isHandRaised, setIsHandRaised] = useState(false);
 
     const [showParticipants, setShowParticipants] = useState(false);
-    const [showChat,         setShowChat]         = useState(false);
-    const [chatMessages,     setChatMessages]     = useState([]);
-    const [chatInput,        setChatInput]        = useState("");
+
+    const [showChat, setShowChat] = useState(false);
+    const [chatMessages, setChatMessages] = useState([]);
+    const [chatInput, setChatInput] = useState("");
     const chatEndRef = useRef(null);
 
     const [showEmojiPicker, setShowEmojiPicker] = useState(false);
-    const [reactions,       setReactions]       = useState([]);
-    const reactionIdRef = useRef(0);
+    const [reactions, setReactions] = useState([]);
+    const reactionId = useRef(0);
     const EMOJIS = ["👍", "❤️", "😂", "😮", "👏", "🎉", "🔥", "😢"];
 
-    // ── Helpers ───────────────────────────────────────────────────────────────
-    const safeSend = useCallback((data) => {
-        const ws = wsRef.current;
-        if (!ws) return;
-        const send = () => ws.send(JSON.stringify(data));
-        if (ws.readyState === WebSocket.OPEN) {
-            send();
+    const safeSend = (data) => {
+
+        if (!wsRef.current) return;
+
+        if (wsRef.current.readyState === WebSocket.OPEN) {
+
+            wsRef.current.send(JSON.stringify(data));
+
         } else {
-            const iv = setInterval(() => {
-                if (ws.readyState === WebSocket.OPEN) { send(); clearInterval(iv); }
+
+            const interval = setInterval(() => {
+
+                if (wsRef.current.readyState === WebSocket.OPEN) {
+
+                    wsRef.current.send(JSON.stringify(data));
+                    clearInterval(interval);
+
+                }
+
             }, 50);
+
         }
-    }, []);
 
-    // ── Clock ────────────────────────────────────────────────────────────────
+    };
+
     useEffect(() => {
-        const t = setInterval(() =>
-            setCurrentTime(new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })),
-        60000);
-        return () => clearInterval(t);
+
+        const timer = setInterval(() => {
+
+            setCurrentTime(
+                new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+            );
+
+        }, 60000);
+
+        return () => clearInterval(timer);
+
     }, []);
 
-    // ── Mic / Video toggles ───────────────────────────────────────────────────
     const toggleMic = () => {
-        localStreamRef.current?.getAudioTracks().forEach(t => (t.enabled = !isMicOn));
-        setIsMicOn(v => !v);
-    };
-    const toggleVideo = () => {
-        localStreamRef.current?.getVideoTracks().forEach(t => (t.enabled = !isVideoOn));
-        setIsVideoOn(v => !v);
+
+        if (localStreamRef.current) {
+
+            localStreamRef.current.getAudioTracks().forEach(track => track.enabled = !isMicOn);
+            setIsMicOn(!isMicOn);
+
+        }
+
     };
 
-    // ── Screen share ──────────────────────────────────────────────────────────
-    const toggleScreenShare = useCallback(async () => {
+    const toggleVideo = () => {
+
+        if (localStreamRef.current) {
+
+            localStreamRef.current.getVideoTracks().forEach(track => track.enabled = !isVideoOn);
+            setIsVideoOn(!isVideoOn);
+
+        }
+
+    };
+
+    // ── SCREEN SHARE ──────────────────────────────────────────────
+    const toggleScreenShare = async () => {
         if (isScreenSharing) {
-            screenStreamRef.current?.getTracks().forEach(t => t.stop());
-            screenStreamRef.current = null;
-            if (localVideoRef.current) localVideoRef.current.srcObject = localStreamRef.current;
-            // Restore camera track in all peers
-            const camTrack = localStreamRef.current?.getVideoTracks()[0];
-            if (camTrack) {
-                Object.values(peersRef.current).forEach(peer => {
-                    const sender = peer.getSenders().find(s => s.track?.kind === "video");
-                    sender?.replaceTrack(camTrack);
-                });
+            // Stop screen share – restore camera
+            if (screenStreamRef.current) {
+                screenStreamRef.current.getTracks().forEach(t => t.stop());
+                screenStreamRef.current = null;
+            }
+            if (localStreamRef.current && localVideoRef.current) {
+                localVideoRef.current.srcObject = localStreamRef.current;
             }
             setIsScreenSharing(false);
         } else {
@@ -139,171 +170,43 @@ export default function MeetingRoom({ meetingId, user, onLeave }) {
                 const screenStream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: false });
                 screenStreamRef.current = screenStream;
                 if (localVideoRef.current) localVideoRef.current.srcObject = screenStream;
+                // Replace video track in all peers
                 const screenTrack = screenStream.getVideoTracks()[0];
                 Object.values(peersRef.current).forEach(peer => {
-                    const sender = peer.getSenders().find(s => s.track?.kind === "video");
-                    sender?.replaceTrack(screenTrack);
+                    const sender = peer.getSenders().find(s => s.track && s.track.kind === 'video');
+                    if (sender) sender.replaceTrack(screenTrack);
                 });
                 screenTrack.onended = () => toggleScreenShare();
                 setIsScreenSharing(true);
             } catch (e) {
-                console.warn("Screen share cancelled", e);
+                console.warn('Screen share cancelled or failed', e);
             }
         }
-    }, [isScreenSharing]);
+    };
 
-    // ── Hand raise ────────────────────────────────────────────────────────────
-    const toggleHand = () => setIsHandRaised(v => !v);
+    // ── HAND RAISE ────────────────────────────────────────────────
+    const toggleHand = () => setIsHandRaised(prev => !prev);
 
-    // ── Chat ──────────────────────────────────────────────────────────────────
+    // ── CHAT ──────────────────────────────────────────────────────
     const sendChat = () => {
         const msg = chatInput.trim();
         if (!msg) return;
-        setChatMessages(prev => [...prev, { id: Date.now(), sender: user.name || "You", text: msg, own: true }]);
+        setChatMessages(prev => [...prev, { id: Date.now(), sender: user.name || 'You', text: msg, own: true }]);
         setChatInput("");
     };
+
     useEffect(() => {
-        chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
+        if (chatEndRef.current) chatEndRef.current.scrollIntoView({ behavior: 'smooth' });
     }, [chatMessages]);
 
-    // ── Emoji reactions ───────────────────────────────────────────────────────
+    // ── EMOJI REACTION ────────────────────────────────────────────
     const sendReaction = (emoji) => {
-        const id = ++reactionIdRef.current;
+        const id = ++reactionId.current;
         setReactions(prev => [...prev, { id, emoji, x: 20 + Math.random() * 60 }]);
         setTimeout(() => setReactions(prev => prev.filter(r => r.id !== id)), 3000);
         setShowEmojiPicker(false);
     };
 
-    // ── WebRTC peer helpers ───────────────────────────────────────────────────
-
-    /**
-     * KEY FIX: We keep ONE stable MediaStream per peer (remoteStreamsRef).
-     * When tracks arrive via ontrack, we addTrack to that same stream object
-     * instead of creating a new MediaStream each time.
-     * React state only needs the stable stream ref; because the MediaStream
-     * object itself mutates we force a re-render by toggling a counter.
-     */
-    const [, forceUpdate] = useState(0);
-    const bump = () => setParticipants(prev => [...prev]); // shallow clone → re-render
-
-    const buildPeer = useCallback((remoteId) => {
-        const peer = new RTCPeerConnection(rtcConfig);
-        peersRef.current[remoteId] = peer;
-
-        // Create a STABLE MediaStream – never replaced, only mutated
-        const remoteStream = new MediaStream();
-        remoteStreamsRef.current[remoteId] = remoteStream;
-
-        // Add to participants list immediately (shows black tile while waiting)
-        setParticipants(prev => [
-            ...prev.filter(p => p.id !== remoteId),
-            { id: remoteId, stream: remoteStream },
-        ]);
-
-        // Add local tracks
-        localStreamRef.current?.getTracks().forEach(track =>
-            peer.addTrack(track, localStreamRef.current)
-        );
-
-        // ── KEY FIX: add track to the stable stream; don't create new stream ──
-        peer.ontrack = ({ track, streams }) => {
-            console.log(`[ontrack] ${track.kind} from ${remoteId}`);
-
-            // Prefer the first streams[] entry when available (standard path)
-            const src = streams?.[0];
-            if (src) {
-                // Attach the browser-provided stream directly
-                remoteStreamsRef.current[remoteId] = src;
-                setParticipants(prev =>
-                    prev.map(p => p.id === remoteId ? { ...p, stream: src } : p)
-                );
-            } else {
-                // Fallback: manually assemble
-                if (!remoteStream.getTracks().find(t => t.id === track.id)) {
-                    remoteStream.addTrack(track);
-                }
-                // Force re-render so RemoteVideo re-attaches
-                setParticipants(prev =>
-                    prev.map(p => p.id === remoteId ? { ...p, stream: remoteStream } : p)
-                );
-            }
-
-            // Ensure video plays (some browsers need this after track add)
-            track.onunmute = () => bump();
-        };
-
-        peer.onicecandidate = ({ candidate }) => {
-            if (!candidate) return;
-            safeSend({ type: "ice-candidate", candidate, caller_id: user.id, target_id: remoteId });
-        };
-
-        peer.onconnectionstatechange = () =>
-            console.log(`[peer ${remoteId}] state:`, peer.connectionState);
-
-        return peer;
-    }, [safeSend, user.id]);
-
-    const flushCandidates = useCallback(async (peerId) => {
-        const peer  = peersRef.current[peerId];
-        const queue = candidateQueue.current[peerId];
-        if (!queue?.length || !peer) return;
-        for (const c of queue) {
-            try { await peer.addIceCandidate(new RTCIceCandidate(c)); } catch (e) { console.warn(e); }
-        }
-        delete candidateQueue.current[peerId];
-    }, []);
-
-    const createPeer = useCallback(async (remoteId, initiator = false) => {
-        if (peersRef.current[remoteId]) return;
-        const peer = buildPeer(remoteId);
-        if (initiator) {
-            const offer = await peer.createOffer();
-            await peer.setLocalDescription(offer);
-            safeSend({ type: "offer", offer, caller_id: user.id, target_id: remoteId });
-        }
-    }, [buildPeer, safeSend, user.id]);
-
-    const handleOffer = useCallback(async (offer, callerId) => {
-        // If peer already exists (shouldn't happen normally) reuse it
-        let peer = peersRef.current[callerId];
-        if (!peer) peer = buildPeer(callerId);
-
-        // Guard: ignore if already set
-        if (peer.signalingState !== "stable" && peer.signalingState !== "have-remote-offer") return;
-
-        await peer.setRemoteDescription(new RTCSessionDescription(offer));
-        await flushCandidates(callerId);
-
-        const answer = await peer.createAnswer();
-        await peer.setLocalDescription(answer);
-        safeSend({ type: "answer", answer, caller_id: user.id, target_id: callerId });
-    }, [buildPeer, flushCandidates, safeSend, user.id]);
-
-    const handleAnswer = useCallback(async (answer, callerId) => {
-        const peer = peersRef.current[callerId];
-        if (!peer || peer.signalingState !== "have-local-offer") return;
-        await peer.setRemoteDescription(new RTCSessionDescription(answer));
-        await flushCandidates(callerId);
-    }, [flushCandidates]);
-
-    const handleCandidate = useCallback(async ({ candidate, caller_id }) => {
-        const peer = peersRef.current[caller_id];
-        if (!peer || !peer.remoteDescription) {
-            // Queue until remoteDescription is set
-            (candidateQueue.current[caller_id] ??= []).push(candidate);
-            return;
-        }
-        try { await peer.addIceCandidate(new RTCIceCandidate(candidate)); } catch (e) { console.warn(e); }
-    }, []);
-
-    const removePeer = useCallback((id) => {
-        peersRef.current[id]?.close();
-        delete peersRef.current[id];
-        delete remoteStreamsRef.current[id];
-        setParticipants(prev => prev.filter(p => p.id !== id));
-    }, []);
-
-    // ── Main effect: media + websocket ────────────────────────────────────────
     useEffect(() => {
         let mounted = true;
         let ws = null;
@@ -311,39 +214,64 @@ export default function MeetingRoom({ meetingId, user, onLeave }) {
         const start = async () => {
             let stream;
             try {
-                stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
-            } catch {
+                stream = await navigator.mediaDevices.getUserMedia({
+                    video: true,
+                    audio: true
+                });
+            } catch (err) {
+                console.warn("Camera failed, trying audio only", err);
                 try {
-                    stream = await navigator.mediaDevices.getUserMedia({ video: false, audio: true });
+                    stream = await navigator.mediaDevices.getUserMedia({
+                        video: false,
+                        audio: true
+                    });
                     setIsVideoOn(false);
-                } catch {
-                    stream = new MediaStream();
+                } catch (audioErr) {
+                    console.error("Audio also failed", audioErr);
+                    stream = new MediaStream(); // empty stream
                     setIsVideoOn(false);
                     setIsMicOn(false);
                 }
             }
 
-            if (!mounted) { stream.getTracks().forEach(t => t.stop()); return; }
+            if (!mounted) {
+                // strict mode double-invoke cleanup
+                stream.getTracks().forEach(t => t.stop());
+                return;
+            }
 
             localStreamRef.current = stream;
-            if (localVideoRef.current) localVideoRef.current.srcObject = stream;
+
+            if (localVideoRef.current)
+                localVideoRef.current.srcObject = stream;
 
             ws = new WebSocket(
                 `wss://snappier-reapply-kieth.ngrok-free.dev/ws/meeting/${meetingId}/`
             );
+
             wsRef.current = ws;
 
-            ws.onopen = () => safeSend({ type: "join-room", user_id: user.id, name: user.name });
+            ws.onopen = () => {
+                safeSend({
+                    type: "join-room",
+                    user_id: user.id,
+                    name: user.name
+                });
+            };
 
             ws.onmessage = async (event) => {
                 const data = JSON.parse(event.data);
-                console.log("WS ▶", data.type, data);
+                console.log("WS EVENT:", data);
                 switch (data.type) {
                     case "existing-users":
-                        data.users.forEach(u => { if (u.user_id !== user.id) createPeer(u.user_id, true); });
+                        data.users.forEach(u => {
+                            if (u.user_id !== user.id)
+                                createPeer(u.user_id, true);
+                        });
                         break;
                     case "user-connected":
-                        if (data.user_id !== user.id) createPeer(data.user_id, true);
+                        if (data.user_id !== user.id)
+                            createPeer(data.user_id, true);
                         break;
                     case "offer":
                         await handleOffer(data.offer, data.caller_id);
@@ -352,56 +280,278 @@ export default function MeetingRoom({ meetingId, user, onLeave }) {
                         await handleAnswer(data.answer, data.caller_id);
                         break;
                     case "ice-candidate":
-                        await handleCandidate(data);
+                        handleCandidate(data);
                         break;
                     case "user-disconnected":
                         removePeer(data.user_id);
                         break;
                 }
             };
-
-            ws.onerror = (e) => console.error("WS error", e);
-            ws.onclose = () => console.log("WS closed");
         };
 
         start();
 
         return () => {
             mounted = false;
-            ws?.close();
-            localStreamRef.current?.getTracks().forEach(t => t.stop());
-            Object.values(peersRef.current).forEach(p => p.close());
-            peersRef.current     = {};
+            // Clean up to prevent duplicate ghost connections in Strict Mode
+            if (ws) ws.close();
+            if (localStreamRef.current) {
+                localStreamRef.current.getTracks().forEach(t => t.stop());
+            }
+            if (peersRef.current) {
+                Object.values(peersRef.current).forEach(p => p.close());
+            }
+            peersRef.current = {};
             remoteStreamsRef.current = {};
         };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [meetingId]);
+    }, []);
 
-    // ── Render ────────────────────────────────────────────────────────────────
+    const createPeer = async (remoteId, initiator = false) => {
+
+        if (peersRef.current[remoteId]) return;
+
+        const peer = new RTCPeerConnection(rtcConfig);
+        peersRef.current[remoteId] = peer;
+
+        // Create the MediaStream for this remote peer upfront
+        const remoteStream = new MediaStream();
+        remoteStreamsRef.current[remoteId] = remoteStream;
+
+        // Immediately add the empty stream to UI so tile appears
+        setParticipants(prev => [
+            ...prev.filter(p => p.id !== remoteId),
+            { id: remoteId, stream: remoteStream }
+        ]);
+
+        localStreamRef.current.getTracks().forEach(track => {
+            peer.addTrack(track, localStreamRef.current);
+        });
+
+        peer.ontrack = (event) => {
+            console.log(`[ontrack] Track received from ${remoteId}:`, event.track.kind);
+
+            // Add track to MediaStream 
+            if (!remoteStream.getTracks().find(t => t.id === event.track.id)) {
+                remoteStream.addTrack(event.track);
+                console.log(`[ontrack] Track added to stream for ${remoteId}. Total tracks:`, remoteStream.getTracks().length);
+            }
+
+            // Force a hard update of the stream reference so React notices it
+            const newStream = new MediaStream(remoteStream.getTracks());
+            remoteStreamsRef.current[remoteId] = newStream;
+
+            setParticipants(prev => prev.map(p =>
+                p.id === remoteId ? { ...p, stream: newStream } : p
+            ));
+        };
+
+        peer.onicecandidate = (event) => {
+
+            if (!event.candidate) return;
+
+            safeSend({
+                type: "ice-candidate",
+                candidate: event.candidate,
+                caller_id: user.id,
+                target_id: remoteId
+            });
+
+        };
+
+        peer.onconnectionstatechange = () => {
+
+            console.log("Connection state:", peer.connectionState);
+
+        };
+
+        if (initiator) {
+
+            const offer = await peer.createOffer();
+
+            await peer.setLocalDescription(offer);
+
+            safeSend({
+                type: "offer",
+                offer,
+                caller_id: user.id,
+                target_id: remoteId
+            });
+
+        }
+
+    };
+
+    const handleOffer = async (offer, callerId) => {
+
+        let peer = peersRef.current[callerId];
+
+        if (!peer) {
+
+            peer = new RTCPeerConnection(rtcConfig);
+            peersRef.current[callerId] = peer;
+
+            // Create the MediaStream upfront
+            const remoteStream = new MediaStream();
+            remoteStreamsRef.current[callerId] = remoteStream;
+
+            // Immediately add the empty stream to UI
+            setParticipants(prev => [
+                ...prev.filter(p => p.id !== callerId),
+                { id: callerId, stream: remoteStream }
+            ]);
+
+            localStreamRef.current.getTracks().forEach(track => {
+                peer.addTrack(track, localStreamRef.current);
+            });
+
+            peer.ontrack = (event) => {
+                console.log(`[ontrack] Track received from ${callerId}:`, event.track.kind);
+
+                if (!remoteStream.getTracks().find(t => t.id === event.track.id)) {
+                    remoteStream.addTrack(event.track);
+                    console.log(`[ontrack] Track added to stream for ${callerId}. Total tracks:`, remoteStream.getTracks().length);
+                }
+
+                const newStream = new MediaStream(remoteStream.getTracks());
+                remoteStreamsRef.current[callerId] = newStream;
+
+                setParticipants(prev => prev.map(p =>
+                    p.id === callerId ? { ...p, stream: newStream } : p
+                ));
+            };
+
+            peer.onicecandidate = (event) => {
+
+                if (!event.candidate) return;
+
+                safeSend({
+                    type: "ice-candidate",
+                    candidate: event.candidate,
+                    caller_id: user.id,
+                    target_id: callerId
+                });
+
+            };
+
+        }
+
+        await peer.setRemoteDescription(
+            new RTCSessionDescription(offer)
+        );
+
+        flushCandidates(callerId);
+
+        const answer = await peer.createAnswer();
+
+        await peer.setLocalDescription(answer);
+
+        safeSend({
+            type: "answer",
+            answer,
+            caller_id: user.id,
+            target_id: callerId
+        });
+
+    };
+
+    const handleAnswer = async (answer, callerId) => {
+
+        const peer = peersRef.current[callerId];
+
+        if (!peer) return;
+
+        if (peer.signalingState !== "have-local-offer") return;
+
+        await peer.setRemoteDescription(
+            new RTCSessionDescription(answer)
+        );
+
+        flushCandidates(callerId);
+
+    };
+
+    const handleCandidate = async (data) => {
+
+        const peer = peersRef.current[data.caller_id];
+
+        if (!peer || !peer.remoteDescription) {
+
+            if (!candidateQueue.current[data.caller_id])
+                candidateQueue.current[data.caller_id] = [];
+
+            candidateQueue.current[data.caller_id].push(data.candidate);
+
+            return;
+
+        }
+
+        await peer.addIceCandidate(
+            new RTCIceCandidate(data.candidate)
+        );
+
+    };
+
+    const flushCandidates = async (peerId) => {
+
+        const peer = peersRef.current[peerId];
+        const queue = candidateQueue.current[peerId];
+
+        if (!queue || !peer) return;
+
+        for (const candidate of queue) {
+
+            await peer.addIceCandidate(
+                new RTCIceCandidate(candidate)
+            );
+
+        }
+
+        delete candidateQueue.current[peerId];
+
+    };
+
+    const removePeer = (id) => {
+
+        if (!peersRef.current[id]) return;
+
+        peersRef.current[id].close();
+        delete peersRef.current[id];
+
+        setParticipants(prev => prev.filter(p => p.id !== id));
+
+    };
+
     return (
         <div className="meet-container">
 
-            {/* Floating emoji reactions */}
+            {/* ── FLOATING EMOJI REACTIONS ───────────────────────────── */}
             <div className="meet-reactions-stage">
                 {reactions.map(r => (
-                    <span key={r.id} className="meet-reaction-bubble" style={{ left: `${r.x}%` }}>
+                    <span
+                        key={r.id}
+                        className="meet-reaction-bubble"
+                        style={{ left: `${r.x}%` }}
+                    >
                         {r.emoji}
                     </span>
                 ))}
             </div>
 
-            <div className="meet-main">
-
+            <div className="meet-main" style={{ position: 'relative' }}>
                 <div className="meet-grid">
 
                     {/* Local tile */}
                     <div className="meet-tile">
                         <video
                             ref={localVideoRef}
-                            className={`meet-video${isScreenSharing ? "" : " flipped"}`}
-                            autoPlay muted playsInline
+                            className={`meet-video${isScreenSharing ? '' : ' flipped'}`}
+                            autoPlay
+                            muted
+                            playsInline
                         />
-                        {isHandRaised && <div className="meet-hand-badge">✋</div>}
+                        {isHandRaised && (
+                            <div className="meet-hand-badge">✋</div>
+                        )}
                         <div className="meet-label">
                             {!isMicOn && (
                                 <div className="meet-mic-indicator muted">
@@ -418,26 +568,26 @@ export default function MeetingRoom({ meetingId, user, onLeave }) {
 
                 </div>
 
-                {/* Participants panel */}
+                {/* ── PARTICIPANTS PANEL ─────────────────────────────────── */}
                 {showParticipants && (
                     <div className="meet-side-panel">
                         <div className="meet-panel-header">
                             <span>People ({participants.length + 1})</span>
-                            <button className="meet-panel-close" onClick={() => setShowParticipants(false)}>
-                                <X size={18} />
-                            </button>
+                            <button className="meet-panel-close" onClick={() => setShowParticipants(false)}><X size={18} /></button>
                         </div>
                         <ul className="meet-panel-list">
                             <li className="meet-panel-item">
-                                <div className="meet-avatar" style={{ background: "#1a73e8" }}>
-                                    {(user.name || "Y")[0].toUpperCase()}
+                                <div className="meet-avatar" style={{ background: '#1a73e8' }}>
+                                    {(user.name || 'Y')[0].toUpperCase()}
                                 </div>
-                                <span>{user.name || "You"} <em>(You)</em></span>
+                                <span>{user.name || 'You'} <em>(You)</em></span>
                                 {isHandRaised && <span className="meet-hand-icon">✋</span>}
                             </li>
                             {participants.map(p => (
                                 <li className="meet-panel-item" key={p.id}>
-                                    <div className="meet-avatar" style={{ background: "#34a853" }}>P</div>
+                                    <div className="meet-avatar" style={{ background: '#34a853' }}>
+                                        P
+                                    </div>
                                     <span>Participant {String(p.id).substring(0, 6)}</span>
                                 </li>
                             ))}
@@ -445,21 +595,19 @@ export default function MeetingRoom({ meetingId, user, onLeave }) {
                     </div>
                 )}
 
-                {/* Chat panel */}
+                {/* ── CHAT PANEL ─────────────────────────────────────────── */}
                 {showChat && (
                     <div className="meet-side-panel">
                         <div className="meet-panel-header">
                             <span>In-call messages</span>
-                            <button className="meet-panel-close" onClick={() => setShowChat(false)}>
-                                <X size={18} />
-                            </button>
+                            <button className="meet-panel-close" onClick={() => setShowChat(false)}><X size={18} /></button>
                         </div>
                         <div className="meet-chat-messages">
                             {chatMessages.length === 0 && (
                                 <p className="meet-chat-empty">No messages yet. Say hello! 👋</p>
                             )}
                             {chatMessages.map(m => (
-                                <div key={m.id} className={`meet-chat-msg ${m.own ? "own" : ""}`}>
+                                <div key={m.id} className={`meet-chat-msg ${m.own ? 'own' : ''}`}>
                                     <span className="meet-chat-sender">{m.sender}</span>
                                     <span className="meet-chat-text">{m.text}</span>
                                 </div>
@@ -472,83 +620,101 @@ export default function MeetingRoom({ meetingId, user, onLeave }) {
                                 placeholder="Send a message..."
                                 value={chatInput}
                                 onChange={e => setChatInput(e.target.value)}
-                                onKeyDown={e => e.key === "Enter" && sendChat()}
+                                onKeyDown={e => e.key === 'Enter' && sendChat()}
                             />
                             <button className="meet-chat-send" onClick={sendChat}><Send size={16} /></button>
                         </div>
                     </div>
                 )}
-
             </div>
 
-            {/* Bottom bar */}
+            {/* ── BOTTOM BAR ─────────────────────────────────────────── */}
             <div className="meet-bottom-bar">
 
                 <div className="meet-bar-left">
-                    {currentTime} | {String(meetingId).substring(0, 11)}…
+                    {currentTime} | {String(meetingId).substring(0, 11)}...
                 </div>
 
                 <div className="meet-bar-center">
 
-                    <button className={`meet-btn ${!isMicOn ? "active-red" : ""}`} onClick={toggleMic} title="Microphone">
+                    <button className={`meet-btn ${!isMicOn ? 'active-red' : ''}`} onClick={toggleMic} title="Microphone">
                         {isMicOn ? <Mic size={20} /> : <MicOff size={20} />}
                     </button>
 
-                    <button className={`meet-btn ${!isVideoOn ? "active-red" : ""}`} onClick={toggleVideo} title="Camera">
+                    <button className={`meet-btn ${!isVideoOn ? 'active-red' : ''}`} onClick={toggleVideo} title="Camera">
                         {isVideoOn ? <VideoIcon size={20} /> : <VideoOff size={20} />}
                     </button>
 
+                    {/* Screen Share */}
                     <button
-                        className={`meet-btn ${isScreenSharing ? "active-blue" : ""}`}
+                        className={`meet-btn ${isScreenSharing ? 'active-blue' : ''}`}
                         onClick={toggleScreenShare}
-                        title={isScreenSharing ? "Stop presenting" : "Present now"}
+                        title={isScreenSharing ? 'Stop presenting' : 'Present now'}
                     >
                         {isScreenSharing ? <MonitorX size={20} /> : <MonitorUp size={20} />}
                     </button>
 
+                    {/* Hand raise */}
                     <button
-                        className={`meet-btn ${isHandRaised ? "active-yellow" : ""}`}
+                        className={`meet-btn ${isHandRaised ? 'active-yellow' : ''}`}
                         onClick={toggleHand}
-                        title={isHandRaised ? "Lower hand" : "Raise hand"}
+                        title={isHandRaised ? 'Lower hand' : 'Raise hand'}
                     >
                         <Hand size={20} />
                     </button>
 
-                    <div style={{ position: "relative" }}>
-                        <button className="meet-btn" onClick={() => setShowEmojiPicker(v => !v)} title="React">
+                    {/* Emoji reactions */}
+                    <div style={{ position: 'relative' }}>
+                        <button
+                            className="meet-btn"
+                            onClick={() => setShowEmojiPicker(prev => !prev)}
+                            title="Send a reaction"
+                        >
                             <span style={{ fontSize: 18 }}>😊</span>
                         </button>
                         {showEmojiPicker && (
                             <div className="meet-emoji-picker">
                                 {EMOJIS.map(e => (
-                                    <button key={e} className="meet-emoji-btn" onClick={() => sendReaction(e)}>{e}</button>
+                                    <button key={e} className="meet-emoji-btn" onClick={() => sendReaction(e)}>
+                                        {e}
+                                    </button>
                                 ))}
                             </div>
                         )}
                     </div>
 
-                    <button className="meet-btn" title="Captions"><Captions size={20} /></button>
-                    <button className="meet-btn" title="More"><MoreVertical size={20} /></button>
+                    <button className="meet-btn" title="Captions">
+                        <Captions size={20} />
+                    </button>
 
-                    <button className="meet-btn-end" onClick={() => onLeave ? onLeave() : window.location.reload()}>
-                        <Phone size={24} style={{ transform: "rotate(135deg)" }} />
+                    <button className="meet-btn" title="More options">
+                        <MoreVertical size={20} />
+                    </button>
+
+                    <button className="meet-btn-end" onClick={() => {
+                        if (onLeave) onLeave();
+                        else window.location.reload();
+                    }}>
+                        <Phone size={24} style={{ transform: 'rotate(135deg)' }} />
                     </button>
 
                 </div>
 
                 <div className="meet-bar-right">
-                    <button className="meet-small-btn" title="Meeting info"><Info size={20} /></button>
+                    <button className="meet-small-btn" title="Meeting info">
+                        <Info size={20} />
+                    </button>
                     <button
-                        className={`meet-small-btn ${showParticipants ? "active-panel" : ""}`}
+                        className={`meet-small-btn ${showParticipants ? 'active-panel' : ''}`}
                         title="People"
-                        onClick={() => { setShowParticipants(v => !v); setShowChat(false); }}
+                        onClick={() => { setShowParticipants(p => !p); setShowChat(false); }}
                     >
                         <Users size={20} />
                     </button>
                     <button
-                        className={`meet-small-btn ${showChat ? "active-panel" : ""}`}
+                        className={`meet-small-btn ${showChat ? 'active-panel' : ''}`}
                         title="Chat"
-                        onClick={() => { setShowChat(v => !v); setShowParticipants(false); }}
+                        onClick={() => { setShowChat(p => !p); setShowParticipants(false); }}
                     >
                         <MessageSquare size={20} />
                     </button>
