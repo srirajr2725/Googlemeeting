@@ -159,93 +159,102 @@ export default function MeetingRoom({ meetingId, user, onLeave }) {
     };
 
     useEffect(() => {
+        let mounted = true;
+        let ws = null;
 
         const start = async () => {
+            let stream;
+            try {
+                stream = await navigator.mediaDevices.getUserMedia({
+                    video: true,
+                    audio: true
+                });
+            } catch (err) {
+                console.warn("Camera failed, trying audio only", err);
+                try {
+                    stream = await navigator.mediaDevices.getUserMedia({
+                        video: false,
+                        audio: true
+                    });
+                    setIsVideoOn(false);
+                } catch (audioErr) {
+                    console.error("Audio also failed", audioErr);
+                    stream = new MediaStream(); // empty stream
+                    setIsVideoOn(false);
+                    setIsMicOn(false);
+                }
+            }
 
-            const stream = await navigator.mediaDevices.getUserMedia({
-                video: true,
-                audio: true
-            });
+            if (!mounted) {
+                // strict mode double-invoke cleanup
+                stream.getTracks().forEach(t => t.stop());
+                return;
+            }
 
             localStreamRef.current = stream;
 
             if (localVideoRef.current)
                 localVideoRef.current.srcObject = stream;
 
-            const ws = new WebSocket(
+            ws = new WebSocket(
                 `wss://snappier-reapply-kieth.ngrok-free.dev/ws/meeting/${meetingId}/`
             );
 
             wsRef.current = ws;
 
             ws.onopen = () => {
-
                 safeSend({
                     type: "join-room",
                     user_id: user.id,
                     name: user.name
                 });
-
             };
 
             ws.onmessage = async (event) => {
-
                 const data = JSON.parse(event.data);
-
                 console.log("WS EVENT:", data);
-
                 switch (data.type) {
-
                     case "existing-users":
-
                         data.users.forEach(u => {
-
                             if (u.user_id !== user.id)
                                 createPeer(u.user_id, true);
-
                         });
-
                         break;
-
                     case "user-connected":
-
                         if (data.user_id !== user.id)
                             createPeer(data.user_id, true);
-
                         break;
-
                     case "offer":
-
                         await handleOffer(data.offer, data.caller_id);
-
                         break;
-
                     case "answer":
-
                         await handleAnswer(data.answer, data.caller_id);
-
                         break;
-
                     case "ice-candidate":
-
                         handleCandidate(data);
-
                         break;
-
                     case "user-disconnected":
-
                         removePeer(data.user_id);
-
                         break;
-
                 }
-
             };
-
         };
 
         start();
 
+        return () => {
+            mounted = false;
+            // Clean up to prevent duplicate ghost connections in Strict Mode
+            if (ws) ws.close();
+            if (localStreamRef.current) {
+                localStreamRef.current.getTracks().forEach(t => t.stop());
+            }
+            if (peersRef.current) {
+                Object.values(peersRef.current).forEach(p => p.close());
+            }
+            peersRef.current = {};
+            remoteStreamsRef.current = {};
+        };
     }, []);
 
     const createPeer = async (remoteId, initiator = false) => {
@@ -538,7 +547,7 @@ export default function MeetingRoom({ meetingId, user, onLeave }) {
                                     <div className="meet-avatar" style={{ background: '#34a853' }}>
                                         P
                                     </div>
-                                    <span>Participant {p.id.substring(0, 6)}</span>
+                                    <span>Participant {String(p.id).substring(0, 6)}</span>
                                 </li>
                             ))}
                         </ul>
@@ -582,7 +591,7 @@ export default function MeetingRoom({ meetingId, user, onLeave }) {
             <div className="meet-bottom-bar">
 
                 <div className="meet-bar-left">
-                    {currentTime} | {meetingId.substring(0, 11)}...
+                    {currentTime} | {String(meetingId).substring(0, 11)}...
                 </div>
 
                 <div className="meet-bar-center">
