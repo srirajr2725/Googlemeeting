@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState } from "react";
 import { Mic, MicOff, Video as VideoIcon, VideoOff, Phone, MonitorUp, MonitorX, MoreVertical, MessageSquare, Users, Info, Captions, Hand, Send, X, GraduationCap } from "lucide-react";
 import './MeetingRoom.css';
 
+// Component for Remote Videos
 function RemoteVideo({ stream, participantId, handRaised }) {
     const videoRef = useRef(null);
 
@@ -11,11 +12,6 @@ function RemoteVideo({ stream, participantId, handRaised }) {
             video.srcObject = s;
         }
         if (video.paused) video.play().catch(() => { });
-    };
-
-    const setVideoRef = (video) => {
-        videoRef.current = video;
-        attachStream(video, stream);
     };
 
     useEffect(() => {
@@ -28,9 +24,15 @@ function RemoteVideo({ stream, participantId, handRaised }) {
 
     return (
         <div className="meet-tile">
-            <video ref={setVideoRef} className="meet-video" autoPlay playsInline />
+            <video 
+                ref={videoRef} 
+                className="meet-video" 
+                autoPlay 
+                playsInline 
+            />
             {handRaised && <div className="meet-hand-badge">✋</div>}
-            <div className="meet-label">Participant {participantId.substring(0, 5)}</div>
+            {/* Added toString() and check to prevent substring error */}
+            <div className="meet-label">Participant {String(participantId || "").substring(0, 5)}</div>
         </div>
     );
 }
@@ -52,16 +54,12 @@ export default function MeetingRoom({ meetingId, user, onLeave }) {
     const [isVideoOn, setIsVideoOn] = useState(true);
     const [currentTime, setCurrentTime] = useState(new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }));
 
-    // UI Features
+    // Feature States
     const [isScreenSharing, setIsScreenSharing] = useState(false);
-    const screenStreamRef = useRef(null);
     const [isHandRaised, setIsHandRaised] = useState(false);
-    const [showParticipants, setShowParticipants] = useState(false);
     const [showChat, setShowChat] = useState(false);
     const [chatMessages, setChatMessages] = useState([]);
     const [chatInput, setChatInput] = useState("");
-    const chatEndRef = useRef(null);
-    const [showEmojiPicker, setShowEmojiPicker] = useState(false);
     const [reactions, setReactions] = useState([]);
     const reactionId = useRef(0);
     const EMOJIS = ["👍", "❤️", "😂", "😮", "👏", "🎉", "🔥", "✋"];
@@ -79,85 +77,88 @@ export default function MeetingRoom({ meetingId, user, onLeave }) {
         return () => clearInterval(timer);
     }, []);
 
-    // ── BROADCAST HAND RAISE ──────────────────────────────────────
+    const handleEndCall = () => {
+        if (localStreamRef.current) {
+            localStreamRef.current.getTracks().forEach(track => track.stop());
+        }
+        if (wsRef.current) wsRef.current.close();
+        if (typeof onLeave === 'function') onLeave();
+    };
+
     const toggleHand = () => {
         const newState = !isHandRaised;
         setIsHandRaised(newState);
         safeSend({ type: "activity", activity_type: "hand-raise", value: newState, sender_id: user.id });
     };
 
-    // ── BROADCAST CHAT ────────────────────────────────────────────
     const sendChat = () => {
         const msg = chatInput.trim();
         if (!msg) return;
-        const chatData = { id: Date.now(), sender: user.name || 'Student', text: msg, own: true };
-        setChatMessages(prev => [...prev, chatData]);
+        setChatMessages(prev => [...prev, { id: Date.now(), sender: user.name || 'You', text: msg, own: true }]);
         safeSend({ type: "activity", activity_type: "chat", text: msg, sender_name: user.name });
         setChatInput("");
     };
 
-    // ── BROADCAST REACTION ────────────────────────────────────────
     const sendReaction = (emoji) => {
-        handleIncomingReaction(emoji);
-        safeSend({ type: "activity", activity_type: "reaction", emoji: emoji });
-        setShowEmojiPicker(false);
-    };
-
-    const handleIncomingReaction = (emoji) => {
         const id = ++reactionId.current;
         setReactions(prev => [...prev, { id, emoji, x: 20 + Math.random() * 60 }]);
         setTimeout(() => setReactions(prev => prev.filter(r => r.id !== id)), 3000);
+        safeSend({ type: "activity", activity_type: "reaction", emoji: emoji });
     };
 
     useEffect(() => {
         const start = async () => {
-            const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
-            localStreamRef.current = stream;
-            if (localVideoRef.current) localVideoRef.current.srcObject = stream;
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+                localStreamRef.current = stream;
+                if (localVideoRef.current) localVideoRef.current.srcObject = stream;
 
-            const ws = new WebSocket(`wss://snappier-reapply-kieth.ngrok-free.dev/ws/meeting/${meetingId}/`);
-            wsRef.current = ws;
+                const ws = new WebSocket(`wss://snappier-reapply-kieth.ngrok-free.dev/ws/meeting/${meetingId}/`);
+                wsRef.current = ws;
 
-            ws.onopen = () => {
-                safeSend({ type: "join-room", user_id: user.id, name: user.name, role: "student" });
-            };
+                ws.onopen = () => {
+                    safeSend({ type: "join-room", user_id: user.id, name: user.name, role: "student" });
+                };
 
-            ws.onmessage = async (event) => {
-                const data = JSON.parse(event.data);
-                switch (data.type) {
-                    case "existing-users":
-                        data.users.forEach(u => { if (u.user_id !== user.id) createPeer(u.user_id, true); });
-                        break;
-                    case "user-connected":
-                        if (data.user_id !== user.id) createPeer(data.user_id, true);
-                        break;
-                    case "offer":
-                        await handleOffer(data.offer, data.caller_id);
-                        break;
-                    case "answer":
-                        if (peersRef.current[data.caller_id]) {
-                            await peersRef.current[data.caller_id].setRemoteDescription(new RTCSessionDescription(data.answer));
-                            flushCandidates(data.caller_id);
-                        }
-                        break;
-                    case "ice-candidate":
-                        handleCandidate(data);
-                        break;
-                    // ── HANDLE OTHER USER ACTIVITIES ────────────────────────
-                    case "activity":
-                        if (data.activity_type === "hand-raise") {
-                            setParticipants(prev => prev.map(p => p.id === data.sender_id ? { ...p, handRaised: data.value } : p));
-                        } else if (data.activity_type === "chat") {
-                            setChatMessages(prev => [...prev, { id: Date.now(), sender: data.sender_name, text: data.text, own: false }]);
-                        } else if (data.activity_type === "reaction") {
-                            handleIncomingReaction(data.emoji);
-                        }
-                        break;
-                    case "user-disconnected":
-                        removePeer(data.user_id);
-                        break;
-                }
-            };
+                ws.onmessage = async (event) => {
+                    const data = JSON.parse(event.data);
+                    switch (data.type) {
+                        case "existing-users":
+                            data.users.forEach(u => { if (u.user_id !== user.id) createPeer(u.user_id, true); });
+                            break;
+                        case "user-connected":
+                            if (data.user_id !== user.id) createPeer(data.user_id, true);
+                            break;
+                        case "offer":
+                            await handleOffer(data.offer, data.caller_id);
+                            break;
+                        case "answer":
+                            if (peersRef.current[data.caller_id]) {
+                                await peersRef.current[data.caller_id].setRemoteDescription(new RTCSessionDescription(data.answer));
+                                flushCandidates(data.caller_id);
+                            }
+                            break;
+                        case "ice-candidate":
+                            handleCandidate(data);
+                            break;
+                        case "activity":
+                            if (data.activity_type === "hand-raise") {
+                                setParticipants(prev => prev.map(p => p.id === data.sender_id ? { ...p, handRaised: data.value } : p));
+                            } else if (data.activity_type === "chat") {
+                                setChatMessages(prev => [...prev, { id: Date.now(), sender: data.sender_name, text: data.text, own: false }]);
+                            } else if (data.activity_type === "reaction") {
+                                const id = ++reactionId.current;
+                                setReactions(prev => [...prev, { id, emoji: data.emoji, x: 20 + Math.random() * 60 }]);
+                                setTimeout(() => setReactions(prev => prev.filter(r => r.id !== id)), 3000);
+                            }
+                            break;
+                        case "user-disconnected":
+                            removePeer(data.user_id);
+                            break;
+                        default: break;
+                    }
+                };
+            } catch (err) { console.error(err); }
         };
         start();
         return () => { if (wsRef.current) wsRef.current.close(); };
@@ -254,7 +255,6 @@ export default function MeetingRoom({ meetingId, user, onLeave }) {
                                     <span className="meet-chat-text">{m.text}</span>
                                 </div>
                             ))}
-                            <div ref={chatEndRef} />
                         </div>
                         <div className="meet-chat-input-row">
                             <input value={chatInput} onChange={e => setChatInput(e.target.value)} onKeyDown={e => e.key === 'Enter' && sendChat()} placeholder="Message..." />
@@ -265,32 +265,23 @@ export default function MeetingRoom({ meetingId, user, onLeave }) {
             </div>
 
             <div className="meet-bottom-bar">
+                {/* Fixed substring error here by converting to String */}
+                <div className="meet-bar-left">{currentTime} | {String(meetingId || "").substring(0, 11)}...</div>
                 <div className="meet-bar-center">
                     <button className={`meet-btn ${!isMicOn ? 'active-red' : ''}`} onClick={() => { 
                         localStreamRef.current.getAudioTracks()[0].enabled = !isMicOn; 
                         setIsMicOn(!isMicOn); 
-                    }}>
-                        {isMicOn ? <Mic size={20} /> : <MicOff size={20} />}
-                    </button>
+                    }}><Mic size={20} /></button>
                     <button className={`meet-btn ${!isVideoOn ? 'active-red' : ''}`} onClick={() => { 
                         localStreamRef.current.getVideoTracks()[0].enabled = !isVideoOn; 
                         setIsVideoOn(!isVideoOn); 
-                    }}>
-                        {isVideoOn ? <VideoIcon size={20} /> : <VideoOff size={20} />}
-                    </button>
+                    }}><VideoIcon size={20} /></button>
                     <button className={`meet-btn ${isHandRaised ? 'active-yellow' : ''}`} onClick={toggleHand}><Hand size={20} /></button>
-                    <div style={{ position: 'relative' }}>
-                        <button className="meet-btn" onClick={() => setShowEmojiPicker(!showEmojiPicker)}>😊</button>
-                        {showEmojiPicker && (
-                            <div className="meet-emoji-picker">
-                                {EMOJIS.map(e => <button key={e} onClick={() => sendReaction(e)}>{e}</button>)}
-                            </div>
-                        )}
-                    </div>
-                    <button className="meet-btn-end" onClick={onLeave}><Phone size={24} style={{ transform: 'rotate(135deg)' }} /></button>
+                    <button className="meet-btn" onClick={() => sendReaction("😂")}>😂</button>
+                    <button className="meet-btn-end" onClick={handleEndCall}><Phone size={24} style={{ transform: 'rotate(135deg)' }} /></button>
                 </div>
                 <div className="meet-bar-right">
-                    <button className={`meet-small-btn ${showChat ? 'active-panel' : ''}`} onClick={() => setShowChat(!showChat)}><MessageSquare size={20} /></button>
+                    <button onClick={() => setShowChat(!showChat)}><MessageSquare size={20} /></button>
                 </div>
             </div>
         </div>
