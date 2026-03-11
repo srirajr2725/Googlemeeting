@@ -26,11 +26,64 @@ export default function MeetingRoom({ meetingId, user, onLeave }) {
     );
 
     const safeSend = (data) => {
+
         if (!wsRef.current) return;
 
         if (wsRef.current.readyState === WebSocket.OPEN) {
+
             wsRef.current.send(JSON.stringify(data));
+
+        } else {
+
+            const interval = setInterval(() => {
+
+                if (wsRef.current.readyState === WebSocket.OPEN) {
+
+                    wsRef.current.send(JSON.stringify(data));
+                    clearInterval(interval);
+
+                }
+
+            }, 50);
+
         }
+
+    };
+
+    useEffect(() => {
+
+        const timer = setInterval(() => {
+
+            setCurrentTime(
+                new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+            );
+
+        }, 60000);
+
+        return () => clearInterval(timer);
+
+    }, []);
+
+    const toggleMic = () => {
+
+        if (localStreamRef.current) {
+
+            localStreamRef.current.getAudioTracks().forEach(track => track.enabled = !isMicOn);
+            setIsMicOn(!isMicOn);
+
+        }
+
+    };
+
+    const toggleVideo = () => {
+
+        if (localStreamRef.current) {
+
+            localStreamRef.current.getVideoTracks().forEach(track => track.enabled = !isVideoOn);
+            setIsVideoOn(!isVideoOn);
+
+        }
+
     };
 
     useEffect(() => {
@@ -74,8 +127,10 @@ export default function MeetingRoom({ meetingId, user, onLeave }) {
                     case "existing-users":
 
                         data.users.forEach(u => {
+
                             if (u.user_id !== user.id)
                                 createPeer(u.user_id, true);
+
                         });
 
                         break;
@@ -110,7 +165,9 @@ export default function MeetingRoom({ meetingId, user, onLeave }) {
                         removePeer(data.user_id);
 
                         break;
+
                 }
+
             };
 
         };
@@ -124,7 +181,6 @@ export default function MeetingRoom({ meetingId, user, onLeave }) {
         if (peersRef.current[remoteId]) return;
 
         const peer = new RTCPeerConnection(rtcConfig);
-
         peersRef.current[remoteId] = peer;
 
         localStreamRef.current.getTracks().forEach(track => {
@@ -135,14 +191,18 @@ export default function MeetingRoom({ meetingId, user, onLeave }) {
 
             const remoteStream = event.streams[0];
 
+            if (!remoteStream) return;
+
             setParticipants(prev => {
 
                 const exists = prev.find(p => p.id === remoteId);
 
                 if (exists) {
+
                     return prev.map(p =>
                         p.id === remoteId ? { ...p, stream: remoteStream } : p
                     );
+
                 }
 
                 return [...prev, { id: remoteId, stream: remoteStream }];
@@ -165,7 +225,9 @@ export default function MeetingRoom({ meetingId, user, onLeave }) {
         };
 
         peer.onconnectionstatechange = () => {
-            console.log("Peer state:", peer.connectionState);
+
+            console.log("Connection state:", peer.connectionState);
+
         };
 
         if (initiator) {
@@ -192,7 +254,6 @@ export default function MeetingRoom({ meetingId, user, onLeave }) {
         if (!peer) {
 
             peer = new RTCPeerConnection(rtcConfig);
-
             peersRef.current[callerId] = peer;
 
             localStreamRef.current.getTracks().forEach(track => {
@@ -203,14 +264,18 @@ export default function MeetingRoom({ meetingId, user, onLeave }) {
 
                 const remoteStream = event.streams[0];
 
+                if (!remoteStream) return;
+
                 setParticipants(prev => {
 
                     const exists = prev.find(p => p.id === callerId);
 
                     if (exists) {
+
                         return prev.map(p =>
                             p.id === callerId ? { ...p, stream: remoteStream } : p
                         );
+
                     }
 
                     return [...prev, { id: callerId, stream: remoteStream }];
@@ -234,7 +299,9 @@ export default function MeetingRoom({ meetingId, user, onLeave }) {
 
         }
 
-        await peer.setRemoteDescription(new RTCSessionDescription(offer));
+        await peer.setRemoteDescription(
+            new RTCSessionDescription(offer)
+        );
 
         flushCandidates(callerId);
 
@@ -259,7 +326,9 @@ export default function MeetingRoom({ meetingId, user, onLeave }) {
 
         if (peer.signalingState !== "have-local-offer") return;
 
-        await peer.setRemoteDescription(new RTCSessionDescription(answer));
+        await peer.setRemoteDescription(
+            new RTCSessionDescription(answer)
+        );
 
         flushCandidates(callerId);
 
@@ -280,7 +349,9 @@ export default function MeetingRoom({ meetingId, user, onLeave }) {
 
         }
 
-        await peer.addIceCandidate(new RTCIceCandidate(data.candidate));
+        await peer.addIceCandidate(
+            new RTCIceCandidate(data.candidate)
+        );
 
     };
 
@@ -292,7 +363,11 @@ export default function MeetingRoom({ meetingId, user, onLeave }) {
         if (!queue || !peer) return;
 
         for (const candidate of queue) {
-            await peer.addIceCandidate(new RTCIceCandidate(candidate));
+
+            await peer.addIceCandidate(
+                new RTCIceCandidate(candidate)
+            );
+
         }
 
         delete candidateQueue.current[peerId];
@@ -323,7 +398,14 @@ export default function MeetingRoom({ meetingId, user, onLeave }) {
                             muted
                             playsInline
                         />
-                        <div className="meet-label">You</div>
+                        <div className="meet-label">
+                            {!isMicOn && (
+                                <div className="meet-mic-indicator muted">
+                                    <MicOff size={14} color="white" />
+                                </div>
+                            )}
+                            You
+                        </div>
                     </div>
 
                     {participants.map(p => (
@@ -333,7 +415,7 @@ export default function MeetingRoom({ meetingId, user, onLeave }) {
                                 autoPlay
                                 playsInline
                                 ref={(video) => {
-                                    if (video && p.stream && video.srcObject !== p.stream) {
+                                    if (video && video.srcObject !== p.stream) {
                                         video.srcObject = p.stream;
                                     }
                                 }}
@@ -346,7 +428,61 @@ export default function MeetingRoom({ meetingId, user, onLeave }) {
 
                 </div>
             </div>
+
+            <div className="meet-bottom-bar">
+
+                <div className="meet-bar-left">
+                    {currentTime} | {meetingId.substring(0, 11)}...
+                </div>
+
+                <div className="meet-bar-center">
+
+                    <button className={`meet-btn ${!isMicOn ? 'active-red' : ''}`} onClick={toggleMic}>
+                        {isMicOn ? <Mic size={20} /> : <MicOff size={20} />}
+                    </button>
+
+                    <button className={`meet-btn ${!isVideoOn ? 'active-red' : ''}`} onClick={toggleVideo}>
+                        {isVideoOn ? <VideoIcon size={20} /> : <VideoOff size={20} />}
+                    </button>
+
+                    <button className="meet-btn">
+                        <Captions size={20} />
+                    </button>
+
+                    <button className="meet-btn">
+                        <Hand size={20} />
+                    </button>
+
+                    <button className="meet-btn">
+                        <MonitorUp size={20} />
+                    </button>
+
+                    <button className="meet-btn">
+                        <MoreVertical size={20} />
+                    </button>
+
+                    <button className="meet-btn-end" onClick={() => {
+                        if (onLeave) onLeave();
+                        else window.location.reload();
+                    }}>
+                        <Phone size={24} style={{ transform: 'rotate(135deg)' }} />
+                    </button>
+
+                </div>
+
+                <div className="meet-bar-right">
+                    <button className="meet-small-btn">
+                        <Info size={20} />
+                    </button>
+                    <button className="meet-small-btn">
+                        <Users size={20} />
+                    </button>
+                    <button className="meet-small-btn">
+                        <MessageSquare size={20} />
+                    </button>
+                </div>
+
+            </div>
         </div>
     );
-
 }
