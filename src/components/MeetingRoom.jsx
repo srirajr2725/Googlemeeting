@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from "react";
-import { Mic, MicOff, Video as VideoIcon, VideoOff, Phone, MonitorUp, MonitorX, MoreVertical, MessageSquare, Users, Info, Captions, Hand, Send, X } from "lucide-react";
+import { Mic, MicOff, Video as VideoIcon, VideoOff, Phone, MonitorUp, MoreVertical, MessageSquare, Users, Info, Captions, Hand } from "lucide-react";
 import './MeetingRoom.css';
 
 const rtcConfig = {
@@ -25,137 +25,12 @@ export default function MeetingRoom({ meetingId, user, onLeave }) {
         new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
     );
 
-    // ── NEW FEATURE STATE ──────────────────────────────────────────
-    const [isScreenSharing, setIsScreenSharing] = useState(false);
-    const screenStreamRef = useRef(null);
-
-    const [isHandRaised, setIsHandRaised] = useState(false);
-
-    const [showParticipants, setShowParticipants] = useState(false);
-
-    const [showChat, setShowChat] = useState(false);
-    const [chatMessages, setChatMessages] = useState([]);
-    const [chatInput, setChatInput] = useState("");
-    const chatEndRef = useRef(null);
-
-    const [showEmojiPicker, setShowEmojiPicker] = useState(false);
-    const [reactions, setReactions] = useState([]);
-    const reactionId = useRef(0);
-    const EMOJIS = ["👍", "❤️", "😂", "😮", "👏", "🎉", "🔥", "😢"];
-
     const safeSend = (data) => {
-
         if (!wsRef.current) return;
 
         if (wsRef.current.readyState === WebSocket.OPEN) {
-
             wsRef.current.send(JSON.stringify(data));
-
-        } else {
-
-            const interval = setInterval(() => {
-
-                if (wsRef.current.readyState === WebSocket.OPEN) {
-
-                    wsRef.current.send(JSON.stringify(data));
-                    clearInterval(interval);
-
-                }
-
-            }, 50);
-
         }
-
-    };
-
-    useEffect(() => {
-
-        const timer = setInterval(() => {
-
-            setCurrentTime(
-                new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-            );
-
-        }, 60000);
-
-        return () => clearInterval(timer);
-
-    }, []);
-
-    const toggleMic = () => {
-
-        if (localStreamRef.current) {
-
-            localStreamRef.current.getAudioTracks().forEach(track => track.enabled = !isMicOn);
-            setIsMicOn(!isMicOn);
-
-        }
-
-    };
-
-    const toggleVideo = () => {
-
-        if (localStreamRef.current) {
-
-            localStreamRef.current.getVideoTracks().forEach(track => track.enabled = !isVideoOn);
-            setIsVideoOn(!isVideoOn);
-
-        }
-
-    };
-
-    // ── SCREEN SHARE ──────────────────────────────────────────────
-    const toggleScreenShare = async () => {
-        if (isScreenSharing) {
-            // Stop screen share – restore camera
-            if (screenStreamRef.current) {
-                screenStreamRef.current.getTracks().forEach(t => t.stop());
-                screenStreamRef.current = null;
-            }
-            if (localStreamRef.current && localVideoRef.current) {
-                localVideoRef.current.srcObject = localStreamRef.current;
-            }
-            setIsScreenSharing(false);
-        } else {
-            try {
-                const screenStream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: false });
-                screenStreamRef.current = screenStream;
-                if (localVideoRef.current) localVideoRef.current.srcObject = screenStream;
-                // Replace video track in all peers
-                const screenTrack = screenStream.getVideoTracks()[0];
-                Object.values(peersRef.current).forEach(peer => {
-                    const sender = peer.getSenders().find(s => s.track && s.track.kind === 'video');
-                    if (sender) sender.replaceTrack(screenTrack);
-                });
-                screenTrack.onended = () => toggleScreenShare();
-                setIsScreenSharing(true);
-            } catch (e) {
-                console.warn('Screen share cancelled or failed', e);
-            }
-        }
-    };
-
-    // ── HAND RAISE ────────────────────────────────────────────────
-    const toggleHand = () => setIsHandRaised(prev => !prev);
-
-    // ── CHAT ──────────────────────────────────────────────────────
-    const sendChat = () => {
-        const msg = chatInput.trim();
-        if (!msg) return;
-        setChatMessages(prev => [...prev, { id: Date.now(), sender: user.name || 'You', text: msg, own: true }]);
-        setChatInput("");
-    };
-
-    useEffect(() => {
-        if (chatEndRef.current) chatEndRef.current.scrollIntoView({ behavior: 'smooth' });
-    }, [chatMessages]);
-
-    // ── EMOJI REACTION ────────────────────────────────────────────
-    const sendReaction = (emoji) => {
-        const id = ++reactionId.current;
-        setReactions(prev => [...prev, { id, emoji, x: 20 + Math.random() * 60 }]);
-        setTimeout(() => setReactions(prev => prev.filter(r => r.id !== id)), 3000);
-        setShowEmojiPicker(false);
     };
 
     useEffect(() => {
@@ -199,10 +74,8 @@ export default function MeetingRoom({ meetingId, user, onLeave }) {
                     case "existing-users":
 
                         data.users.forEach(u => {
-
                             if (u.user_id !== user.id)
                                 createPeer(u.user_id, true);
-
                         });
 
                         break;
@@ -237,9 +110,7 @@ export default function MeetingRoom({ meetingId, user, onLeave }) {
                         removePeer(data.user_id);
 
                         break;
-
                 }
-
             };
 
         };
@@ -253,6 +124,7 @@ export default function MeetingRoom({ meetingId, user, onLeave }) {
         if (peersRef.current[remoteId]) return;
 
         const peer = new RTCPeerConnection(rtcConfig);
+
         peersRef.current[remoteId] = peer;
 
         localStreamRef.current.getTracks().forEach(track => {
@@ -263,18 +135,14 @@ export default function MeetingRoom({ meetingId, user, onLeave }) {
 
             const remoteStream = event.streams[0];
 
-            if (!remoteStream) return;
-
             setParticipants(prev => {
 
                 const exists = prev.find(p => p.id === remoteId);
 
                 if (exists) {
-
                     return prev.map(p =>
                         p.id === remoteId ? { ...p, stream: remoteStream } : p
                     );
-
                 }
 
                 return [...prev, { id: remoteId, stream: remoteStream }];
@@ -297,9 +165,7 @@ export default function MeetingRoom({ meetingId, user, onLeave }) {
         };
 
         peer.onconnectionstatechange = () => {
-
-            console.log("Connection state:", peer.connectionState);
-
+            console.log("Peer state:", peer.connectionState);
         };
 
         if (initiator) {
@@ -326,6 +192,7 @@ export default function MeetingRoom({ meetingId, user, onLeave }) {
         if (!peer) {
 
             peer = new RTCPeerConnection(rtcConfig);
+
             peersRef.current[callerId] = peer;
 
             localStreamRef.current.getTracks().forEach(track => {
@@ -336,18 +203,14 @@ export default function MeetingRoom({ meetingId, user, onLeave }) {
 
                 const remoteStream = event.streams[0];
 
-                if (!remoteStream) return;
-
                 setParticipants(prev => {
 
                     const exists = prev.find(p => p.id === callerId);
 
                     if (exists) {
-
                         return prev.map(p =>
                             p.id === callerId ? { ...p, stream: remoteStream } : p
                         );
-
                     }
 
                     return [...prev, { id: callerId, stream: remoteStream }];
@@ -371,9 +234,7 @@ export default function MeetingRoom({ meetingId, user, onLeave }) {
 
         }
 
-        await peer.setRemoteDescription(
-            new RTCSessionDescription(offer)
-        );
+        await peer.setRemoteDescription(new RTCSessionDescription(offer));
 
         flushCandidates(callerId);
 
@@ -398,9 +259,7 @@ export default function MeetingRoom({ meetingId, user, onLeave }) {
 
         if (peer.signalingState !== "have-local-offer") return;
 
-        await peer.setRemoteDescription(
-            new RTCSessionDescription(answer)
-        );
+        await peer.setRemoteDescription(new RTCSessionDescription(answer));
 
         flushCandidates(callerId);
 
@@ -421,9 +280,7 @@ export default function MeetingRoom({ meetingId, user, onLeave }) {
 
         }
 
-        await peer.addIceCandidate(
-            new RTCIceCandidate(data.candidate)
-        );
+        await peer.addIceCandidate(new RTCIceCandidate(data.candidate));
 
     };
 
@@ -435,11 +292,7 @@ export default function MeetingRoom({ meetingId, user, onLeave }) {
         if (!queue || !peer) return;
 
         for (const candidate of queue) {
-
-            await peer.addIceCandidate(
-                new RTCIceCandidate(candidate)
-            );
-
+            await peer.addIceCandidate(new RTCIceCandidate(candidate));
         }
 
         delete candidateQueue.current[peerId];
@@ -459,43 +312,18 @@ export default function MeetingRoom({ meetingId, user, onLeave }) {
 
     return (
         <div className="meet-container">
-
-            {/* ── FLOATING EMOJI REACTIONS ───────────────────────────── */}
-            <div className="meet-reactions-stage">
-                {reactions.map(r => (
-                    <span
-                        key={r.id}
-                        className="meet-reaction-bubble"
-                        style={{ left: `${r.x}%` }}
-                    >
-                        {r.emoji}
-                    </span>
-                ))}
-            </div>
-
-            <div className="meet-main" style={{ position: 'relative' }}>
+            <div className="meet-main">
                 <div className="meet-grid">
 
-                    {/* Local tile */}
                     <div className="meet-tile">
                         <video
                             ref={localVideoRef}
-                            className={`meet-video${isScreenSharing ? '' : ' flipped'}`}
+                            className="meet-video flipped"
                             autoPlay
                             muted
                             playsInline
                         />
-                        {isHandRaised && (
-                            <div className="meet-hand-badge">✋</div>
-                        )}
-                        <div className="meet-label">
-                            {!isMicOn && (
-                                <div className="meet-mic-indicator muted">
-                                    <MicOff size={14} color="white" />
-                                </div>
-                            )}
-                            You {isScreenSharing && <span className="meet-screen-badge">● Presenting</span>}
-                        </div>
+                        <div className="meet-label">You</div>
                     </div>
 
                     {participants.map(p => (
@@ -505,7 +333,7 @@ export default function MeetingRoom({ meetingId, user, onLeave }) {
                                 autoPlay
                                 playsInline
                                 ref={(video) => {
-                                    if (video && video.srcObject !== p.stream) {
+                                    if (video && p.stream && video.srcObject !== p.stream) {
                                         video.srcObject = p.stream;
                                     }
                                 }}
@@ -517,160 +345,8 @@ export default function MeetingRoom({ meetingId, user, onLeave }) {
                     ))}
 
                 </div>
-
-                {/* ── PARTICIPANTS PANEL ─────────────────────────────────── */}
-                {showParticipants && (
-                    <div className="meet-side-panel">
-                        <div className="meet-panel-header">
-                            <span>People ({participants.length + 1})</span>
-                            <button className="meet-panel-close" onClick={() => setShowParticipants(false)}><X size={18} /></button>
-                        </div>
-                        <ul className="meet-panel-list">
-                            <li className="meet-panel-item">
-                                <div className="meet-avatar" style={{ background: '#1a73e8' }}>
-                                    {(user.name || 'Y')[0].toUpperCase()}
-                                </div>
-                                <span>{user.name || 'You'} <em>(You)</em></span>
-                                {isHandRaised && <span className="meet-hand-icon">✋</span>}
-                            </li>
-                            {participants.map(p => (
-                                <li className="meet-panel-item" key={p.id}>
-                                    <div className="meet-avatar" style={{ background: '#34a853' }}>
-                                        P
-                                    </div>
-                                    <span>Participant {p.id.substring(0, 6)}</span>
-                                </li>
-                            ))}
-                        </ul>
-                    </div>
-                )}
-
-                {/* ── CHAT PANEL ─────────────────────────────────────────── */}
-                {showChat && (
-                    <div className="meet-side-panel">
-                        <div className="meet-panel-header">
-                            <span>In-call messages</span>
-                            <button className="meet-panel-close" onClick={() => setShowChat(false)}><X size={18} /></button>
-                        </div>
-                        <div className="meet-chat-messages">
-                            {chatMessages.length === 0 && (
-                                <p className="meet-chat-empty">No messages yet. Say hello! 👋</p>
-                            )}
-                            {chatMessages.map(m => (
-                                <div key={m.id} className={`meet-chat-msg ${m.own ? 'own' : ''}`}>
-                                    <span className="meet-chat-sender">{m.sender}</span>
-                                    <span className="meet-chat-text">{m.text}</span>
-                                </div>
-                            ))}
-                            <div ref={chatEndRef} />
-                        </div>
-                        <div className="meet-chat-input-row">
-                            <input
-                                className="meet-chat-input"
-                                placeholder="Send a message..."
-                                value={chatInput}
-                                onChange={e => setChatInput(e.target.value)}
-                                onKeyDown={e => e.key === 'Enter' && sendChat()}
-                            />
-                            <button className="meet-chat-send" onClick={sendChat}><Send size={16} /></button>
-                        </div>
-                    </div>
-                )}
-            </div>
-
-            {/* ── BOTTOM BAR ─────────────────────────────────────────── */}
-            <div className="meet-bottom-bar">
-
-                <div className="meet-bar-left">
-                    {currentTime} | {meetingId.substring(0, 11)}...
-                </div>
-
-                <div className="meet-bar-center">
-
-                    <button className={`meet-btn ${!isMicOn ? 'active-red' : ''}`} onClick={toggleMic} title="Microphone">
-                        {isMicOn ? <Mic size={20} /> : <MicOff size={20} />}
-                    </button>
-
-                    <button className={`meet-btn ${!isVideoOn ? 'active-red' : ''}`} onClick={toggleVideo} title="Camera">
-                        {isVideoOn ? <VideoIcon size={20} /> : <VideoOff size={20} />}
-                    </button>
-
-                    {/* Screen Share */}
-                    <button
-                        className={`meet-btn ${isScreenSharing ? 'active-blue' : ''}`}
-                        onClick={toggleScreenShare}
-                        title={isScreenSharing ? 'Stop presenting' : 'Present now'}
-                    >
-                        {isScreenSharing ? <MonitorX size={20} /> : <MonitorUp size={20} />}
-                    </button>
-
-                    {/* Hand raise */}
-                    <button
-                        className={`meet-btn ${isHandRaised ? 'active-yellow' : ''}`}
-                        onClick={toggleHand}
-                        title={isHandRaised ? 'Lower hand' : 'Raise hand'}
-                    >
-                        <Hand size={20} />
-                    </button>
-
-                    {/* Emoji reactions */}
-                    <div style={{ position: 'relative' }}>
-                        <button
-                            className="meet-btn"
-                            onClick={() => setShowEmojiPicker(prev => !prev)}
-                            title="Send a reaction"
-                        >
-                            <span style={{ fontSize: 18 }}>😊</span>
-                        </button>
-                        {showEmojiPicker && (
-                            <div className="meet-emoji-picker">
-                                {EMOJIS.map(e => (
-                                    <button key={e} className="meet-emoji-btn" onClick={() => sendReaction(e)}>
-                                        {e}
-                                    </button>
-                                ))}
-                            </div>
-                        )}
-                    </div>
-
-                    <button className="meet-btn" title="Captions">
-                        <Captions size={20} />
-                    </button>
-
-                    <button className="meet-btn" title="More options">
-                        <MoreVertical size={20} />
-                    </button>
-
-                    <button className="meet-btn-end" onClick={() => {
-                        if (onLeave) onLeave();
-                        else window.location.reload();
-                    }}>
-                        <Phone size={24} style={{ transform: 'rotate(135deg)' }} />
-                    </button>
-
-                </div>
-
-                <div className="meet-bar-right">
-                    <button className="meet-small-btn" title="Meeting info">
-                        <Info size={20} />
-                    </button>
-                    <button
-                        className={`meet-small-btn ${showParticipants ? 'active-panel' : ''}`}
-                        title="People"
-                        onClick={() => { setShowParticipants(p => !p); setShowChat(false); }}
-                    >
-                        <Users size={20} />
-                    </button>
-                    <button
-                        className={`meet-small-btn ${showChat ? 'active-panel' : ''}`}
-                        title="Chat"
-                        onClick={() => { setShowChat(p => !p); setShowParticipants(false); }}
-                    >
-                        <MessageSquare size={20} />
-                    </button>
-                </div>
-
             </div>
         </div>
     );
+
 }
