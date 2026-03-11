@@ -11,11 +11,8 @@ function RemoteVideo({ stream, participantId }) {
     const attachStream = (video, s) => {
         if (!video || !s) return;
         if (video.srcObject !== s) {
+            video.srcObject = null; // force clear
             video.srcObject = s;
-        }
-        // If paused or not playing, try to play
-        if (video.paused) {
-            video.play().catch(e => console.warn("play() failed:", e));
         }
     };
 

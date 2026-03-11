@@ -26,7 +26,7 @@ const Login = ({ onLogin }) => {
 
         try {
             console.log('Attempting to sign up / log in with:', formData);
-            const res = await fetch('https://snappier-reapply-kieth.ngrok-free.dev/users/signup/', {
+            const res = await fetch('https://api.codingboss.in/signaling/signup/', {
                 method: 'POST',
                 headers: {
                     'Accept': 'application/json',

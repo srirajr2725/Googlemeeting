@@ -26,7 +26,7 @@ const LandingPage = ({ user }) => {
     const userId = user?.id || 1;
 
     try {
-      const res = await fetch('https://snappier-reapply-kieth.ngrok-free.dev/participants/join/', {
+      const res = await fetch('https://api.codingboss.in/signaling/join/', {
         method: 'POST',
         headers: {
           'Accept': 'application/json',
@@ -60,11 +60,11 @@ const LandingPage = ({ user }) => {
       <header className="landing-header">
         <div className="logo-container">
           <svg width="34" height="34" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-            <path d="M0 4.5V14.5C0 15.6046 0.895431 16.5 2 16.5H12V4.5C12 3.39543 11.1046 2.5 10 2.5H2C0.895431 2.5 0 3.39543 0 4.5Z" fill="#00832D"/>
-            <path d="M24 11.5L17 16.5V6.5L24 1.5V11.5Z" fill="#00832D"/>
-            <path d="M17 14.5V19.5C17 20.6046 16.1046 21.5 15 21.5H2C0.895431 21.5 0 20.6046 0 19.5V16.5H15C16.1046 16.5 17 15.6046 17 14.5Z" fill="#2684FC"/>
-            <path d="M17 14.5C17 13.3954 16.1046 12.5 15 12.5H12V16.5H15C16.1046 16.5 17 15.6046 17 14.5Z" fill="#EA4335"/>
-            <path d="M12 4.5V16.5H15C16.1046 16.5 17 15.6046 17 14.5V4.5C17 3.39543 16.1046 2.5 15 2.5H12Z" fill="#FFBA00"/>
+            <path d="M0 4.5V14.5C0 15.6046 0.895431 16.5 2 16.5H12V4.5C12 3.39543 11.1046 2.5 10 2.5H2C0.895431 2.5 0 3.39543 0 4.5Z" fill="#00832D" />
+            <path d="M24 11.5L17 16.5V6.5L24 1.5V11.5Z" fill="#00832D" />
+            <path d="M17 14.5V19.5C17 20.6046 16.1046 21.5 15 21.5H2C0.895431 21.5 0 20.6046 0 19.5V16.5H15C16.1046 16.5 17 15.6046 17 14.5Z" fill="#2684FC" />
+            <path d="M17 14.5C17 13.3954 16.1046 12.5 15 12.5H12V16.5H15C16.1046 16.5 17 15.6046 17 14.5Z" fill="#EA4335" />
+            <path d="M12 4.5V16.5H15C16.1046 16.5 17 15.6046 17 14.5V4.5C17 3.39543 16.1046 2.5 15 2.5H12Z" fill="#FFBA00" />
           </svg>
           <span className="logo-text">Raanuva <span className="bold">Veeran</span></span>
         </div>
@@ -93,12 +93,12 @@ const LandingPage = ({ user }) => {
 
           <div className="action-buttons">
             <button className="new-meeting-btn" onClick={handleNewMeeting}>
-              <Video size={20}/> New meeting
+              <Video size={20} /> New meeting
             </button>
 
             <div className="join-input-container">
               <div className="input-with-icon">
-                <Keyboard size={20} className="input-icon"/>
+                <Keyboard size={20} className="input-icon" />
                 <input type="text" placeholder="Enter a code or link" value={meetingCode} onChange={(e) => setMeetingCode(e.target.value)} />
               </div>
               <button className="join-btn" disabled={!meetingCode} onClick={() => handleJoinMeeting(meetingCode)}>
